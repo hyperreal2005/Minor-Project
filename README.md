@@ -56,6 +56,17 @@ same item — with no coordination between them.
 | 4 | RMIA shadow models | 32 |
 | 5 | unlearning runs | 240 |
 
+### Two Kaggle Datasets
+
+Create both once, then attach them to every notebook via **Add Input → Datasets**:
+
+| Dataset | What | Why |
+|---|---|---|
+| `forgetcheck-cifar10` | the extracted `cifar-10-batches-py` | CIFAR downloads at ~130 kB/s on Kaggle (~20 min), on every session and account. Publish our own rather than a public one: the hash in `configs/base.yaml` is of this exact torchvision-format download |
+| `forgetcheck-artifacts` | `artifacts/` + `results/` | Lets a session skip runs another account already finished. Re-version it after each stage |
+
+`00_verify_setup.ipynb` has a cell that stages CIFAR for upload.
+
 ## Layout
 
 ```

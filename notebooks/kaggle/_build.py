@@ -78,6 +78,18 @@ os.environ["PYTHONPATH"] = SRC + os.pathsep + os.environ.get("PYTHONPATH", "")
 import forgetcheck
 print("forgetcheck imported from:", Path(forgetcheck.__file__).parent)
 
+# CIFAR-10 downloads at roughly 130 kB/s on Kaggle -- about 20 minutes, repeated on every
+# session and every account. Attaching it as a Dataset (Add Input -> Datasets) skips that
+# entirely: torchvision checks md5s of the extracted folder and only downloads if it is missing
+# or corrupt. See 00_verify_setup.ipynb for how to create the dataset once.
+CIFAR_IN = Path("/kaggle/input/forgetcheck-cifar10")
+if CIFAR_IN.exists():
+    (REPO_DIR / "data").mkdir(parents=True, exist_ok=True)
+    !cp -r $CIFAR_IN/cifar-10-batches-py $REPO_DIR/data/ 2>/dev/null || true
+    print("CIFAR-10 restored from the attached dataset - no download needed")
+else:
+    print("no CIFAR-10 dataset attached - it will download (~20 min)")
+
 # Attach a previous artefact dataset (Add Input -> Datasets) so completed runs are skipped
 # rather than recomputed. Without it, every session starts from nothing.
 ARTIFACTS_IN = Path("/kaggle/input/forgetcheck-artifacts")
@@ -220,12 +232,50 @@ print("\\n ", {k: v for k, v in summary.items() if not k.startswith("overlap_")}
 !{CLI} --root . --dry-run queue --stage 5 --account 1 --of 3 | tail -5
 """),
         md("""\
+## Save CIFAR-10 as a Kaggle Dataset — do this once
+
+CIFAR-10 downloads at ~130 kB/s here, about **20 minutes**, and it would repeat on every session
+and every account. Publishing it once as a private Dataset removes that from every future run.
+
+Why publish our own rather than use one of the public CIFAR-10 datasets already on Kaggle: the
+hash pinned in `configs/base.yaml` is of *this exact* torchvision-format download. A public
+dataset in a different layout (PNGs, a re-pickled archive) would fail the hash check — correctly,
+because it would not be the same bytes everyone else trained on.
+
+The cell below stages the files. Then either run the `kaggle datasets create` line (needs an API
+token at `~/.kaggle/kaggle.json` — Kaggle → Account → Create New API Token), or use the UI:
+**Save Version** this notebook, then **New Dataset → From your notebook output**.
+"""),
+        code("""\
+from pathlib import Path
+
+CIFAR_OUT = Path("/kaggle/working/cifar10_dataset")
+CIFAR_OUT.mkdir(exist_ok=True)
+
+# Only the extracted folder is needed -- torchvision verifies its md5s and skips the download.
+# The .tar.gz would just double the size.
+!cp -r /kaggle/working/Minor-Project/data/cifar-10-batches-py $CIFAR_OUT/ 2>/dev/null || true
+
+import json
+(CIFAR_OUT / "dataset-metadata.json").write_text(json.dumps({
+    "title": "forgetcheck-cifar10",
+    "id": "YOUR-KAGGLE-USERNAME/forgetcheck-cifar10",   # <-- your username
+    "licenses": [{"name": "CC0-1.0"}],
+}, indent=2))
+
+!du -sh $CIFAR_OUT
+print("\\nthen run:  !kaggle datasets create -p", CIFAR_OUT, "--dir-mode zip")
+print("afterwards, attach it via Add Input -> Datasets in every notebook")
+"""),
+        md("""\
 ### If everything above passed
 
 This account is ready. Move on to `01_train.ipynb`.
 
 If the CIFAR hash or the memorization hash differed, **stop** — do not train. Compare
-`configs/base.yaml` against the repo and re-download rather than proceeding.
+`configs/base.yaml` against the repo and re-download rather than proceeding: a different download
+would silently make this account's results incomparable with everyone else's, and that is
+precisely what the hash exists to catch.
 """),
     ])
 
