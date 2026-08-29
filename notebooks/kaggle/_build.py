@@ -49,9 +49,34 @@ if not Path("Minor-Project").exists():
 """
 
 SETUP = """\
+import importlib
+import sys
 from pathlib import Path
 
 REPO_DIR = Path("/kaggle/working/Minor-Project")
+
+# Make the package importable *in this kernel*.
+#
+# `pip install -e .` writes a .pth file into site-packages, and .pth files are only processed at
+# interpreter startup. The kernel was already running when the previous cell installed, so
+# sys.path never picked it up and `import forgetcheck` fails with ModuleNotFoundError. The
+# `!forgetcheck` CLI calls below are unaffected -- each spawns a fresh Python that does read the
+# .pth -- which makes this failure look stranger than it is.
+#
+# Adding src/ directly is deterministic and avoids making anyone restart the kernel.
+SRC = str(REPO_DIR / "src")
+if SRC not in sys.path:
+    sys.path.insert(0, SRC)
+importlib.invalidate_caches()
+
+# `!` cells run in a subshell, which inherits this. Belt and braces: the console script should
+# already be on PATH after the editable install, but if it is not, PYTHONPATH keeps
+# `python -m forgetcheck.cli` working as a fallback.
+import os
+os.environ["PYTHONPATH"] = SRC + os.pathsep + os.environ.get("PYTHONPATH", "")
+
+import forgetcheck
+print("forgetcheck imported from:", Path(forgetcheck.__file__).parent)
 
 # Attach a previous artefact dataset (Add Input -> Datasets) so completed runs are skipped
 # rather than recomputed. Without it, every session starts from nothing.
@@ -69,10 +94,14 @@ if torch.cuda.is_available():
 else:
     print("!! running on CPU. Set Settings -> Accelerator -> GPU.")
     print("!! On CPU one 30-epoch training run takes ~4.8 hours instead of ~12 minutes.")
+
+import shutil
+CLI = "forgetcheck" if shutil.which("forgetcheck") else f"{sys.executable} -m forgetcheck.cli"
+print("cli:", CLI)
 """
 
 STATUS = """\
-!forgetcheck --root . status
+!{CLI} --root . status
 """
 
 PUSH = """\
@@ -182,13 +211,13 @@ for stratum, row in report.items():
     print(f"  {stratum:7s} mean={row['mean']:.4f}  std={row['std']:.4f}")
 print("\\n ", {k: v for k, v in summary.items() if not k.startswith("overlap_")})
 """),
-        code("!forgetcheck --root . forget-sets"),
+        code("!{CLI} --root . forget-sets"),
         md("## What the full matrix will cost\n\n`--dry-run` lists the work without doing any "
            "of it."),
         code("""\
-!forgetcheck --root . --dry-run queue --stage 3 --account 1 --of 3 | tail -5
-!forgetcheck --root . --dry-run queue --stage 4 --account 1 --of 3 | tail -5
-!forgetcheck --root . --dry-run queue --stage 5 --account 1 --of 3 | tail -5
+!{CLI} --root . --dry-run queue --stage 3 --account 1 --of 3 | tail -5
+!{CLI} --root . --dry-run queue --stage 4 --account 1 --of 3 | tail -5
+!{CLI} --root . --dry-run queue --stage 5 --account 1 --of 3 | tail -5
 """),
         md("""\
 ### If everything above passed
@@ -228,12 +257,12 @@ print(f"account {{ACCOUNT}} of {{OF}}, stage {{STAGE}}, device {{DEVICE}}")
 """),
         md("## What this account will do"),
         code("""\
-!forgetcheck --root . --dry-run queue --stage {STAGE} --account {ACCOUNT} --of {OF}
+!{CLI} --root . --dry-run queue --stage {STAGE} --account {ACCOUNT} --of {OF}
 """.replace("{STAGE}", "{STAGE}")),
         md("## Run it\n\nThis is the long cell. It prints each run as it starts and finishes, so "
            "you can watch progress and estimate the remaining time."),
         code("""\
-!forgetcheck --root . --device {DEVICE} queue --stage {STAGE} --account {ACCOUNT} --of {OF}
+!{CLI} --root . --device {DEVICE} queue --stage {STAGE} --account {ACCOUNT} --of {OF}
 """),
         md("## Inspect what came out" + extra_md),
         code("""\

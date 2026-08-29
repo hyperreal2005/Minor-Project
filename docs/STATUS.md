@@ -178,6 +178,19 @@ fits the forgotten data. `ce_loss` is now restricted to retain/test; the forget 
 `forget_loss`, which is `closer_to_oracle`. This is the metric registry doing exactly the job it
 was built for.
 
+## Kaggle notebook gotcha, fixed
+
+`pip install -e .` writes a `.pth` file into site-packages, and **`.pth` files are only processed
+at interpreter startup**. A Kaggle kernel is already running when the install cell executes, so
+`import forgetcheck` failed with `ModuleNotFoundError` even though the install had succeeded.
+
+Confusingly, the `!forgetcheck` CLI calls were unaffected — each spawns a fresh Python that does
+read the `.pth` — so the failure looked stranger than it was.
+
+The setup cell now inserts `src/` into `sys.path` directly, calls `importlib.invalidate_caches()`,
+and exports `PYTHONPATH` for the `!` subshells. It also resolves the CLI to
+`python -m forgetcheck.cli` if the console script is not on PATH.
+
 ## Open questions
 
 ### 1. RUM strata — RESOLVED (27 Aug 2026)
