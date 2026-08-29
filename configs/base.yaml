@@ -1,0 +1,88 @@
+# ForgetCheck base configuration
+#
+# Values marked PILOT are deliberately provisional: implementation plan §10 lists them as open
+# decisions to be settled by one measurement during the week-6 pilot, not by argument now.
+# Anything changed here must be changed for M0, the oracles AND the shadow models together —
+# a schedule applied inconsistently across those three makes every oracle-referenced metric
+# meaningless.
+
+dataset:
+  name: cifar10
+  root: data
+  num_classes: 10
+  n_train: 50000
+  n_test: 10000
+  # Pinned 26 Aug 2026 from the first machine's download (Stage 0 gate). CIFAR-10 is a fixed
+  # dataset, so every correct download hashes to this. A different value on another machine
+  # means a corrupt or substituted download, and fails loudly rather than producing
+  # incomparable results.
+  expect_sha: 6b3883dca6c867f1
+
+model:
+  arch: resnet18
+  # torchvision resnet18 with a 3x3 stride-1 stem and no maxpool — the adaptation the CIFAR
+  # unlearning literature uses. See src/forgetcheck/models/resnet.py.
+
+training:
+  epochs: 30              # PILOT — pin to whatever reaches the stated accuracy, then stop
+  batch_size: 256
+  optimizer: sgd
+  lr: 0.1
+  momentum: 0.9
+  weight_decay: 5.0e-4
+  nesterov: true
+  scheduler: cosine
+  warmup_epochs: 1
+  label_smoothing: 0.0
+  # Mixed precision and channels-last are GPU-path only; they are no-ops on the CPU machines
+  # used for audits. Enable from the start on Kaggle (plan §5).
+  amp: true
+  channels_last: true
+  num_workers: 2
+  # Stage 3 gate: test accuracy reproducible across seeds within this margin. The spread itself
+  # is reported, not averaged away — it is the raw material for every oracle band.
+  seed_spread_tolerance_pp: 0.5
+
+seeds:
+  # Three independent streams. Never share a seed across them: mixing them silently couples
+  # effects the analysis assumes are independent (plan §3.3).
+  train: [0, 1, 2, 3, 4]
+  selection: 100
+  # Twelve ensemble oracles at the primary condition; the last three are held out as validity
+  # probes and never contribute to a reference band.
+  oracle: [200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211]
+  oracle_holdout: [209, 210, 211]
+  audit: 300
+
+oracles:
+  primary_condition: mem-high-3000
+  # Paired oracles exist for every condition and match M0 by train_seed.
+  paired_seeds: [0, 1, 2, 3, 4]
+
+shadows:
+  # RMIA reference models. Condition-independent — they model the data distribution, not any
+  # forget set — so the same 32 serve all eight conditions (plan §3.5).
+  count: 32
+  subset_fraction: 0.5
+
+memorization:
+  # Downloaded 27 Aug 2026 from the RUM repository (github.com/kairanzhao/RUM), which links a
+  # Google Drive archive `estimates_results.npz` (~2 GB) holding memorization.npy alongside a
+  # 2 GB influence matrix we do not use. Only the memorization array is kept.
+  # Feldman & Zhang's own release covers CIFAR-100 and ImageNet, not CIFAR-10, so RUM is the only
+  # source and the proxy is the contingency.
+  source: rum
+  path: data/memorization/cifar10_memorization.npy
+  expect_sha: 2875af6972b5af57
+  fallback_proxy: confidence   # Spearman -0.80..-0.91 vs exact, ~0.002% of the cost
+  # Verified on the real scores (Stage 2 gate):
+  #   low    mean 0.0000  std 0.0000   <- bottom 3000 are exactly zero; a perfect negative control
+  #   medium mean 0.5004  std 0.0345   <- centred on 0.5 exactly as RUM defines medium-mem
+  #   high   mean 0.9655  std 0.0270
+  #   stratum overlap 0; 26.6% of CIFAR-10 scores below 0.01; 24.9% above 0.5
+
+paths:
+  artifacts: artifacts
+  records: results/records
+  curves: results/curves
+  figures: results/figures

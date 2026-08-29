@@ -1,0 +1,38 @@
+name: tests
+
+# Runs the fast suite on every push and PR. Catches the class of mistake that matters most for a
+# four-person project: a change to the binding contracts in src/forgetcheck/registry (run ids,
+# the record schema, the metric registry) that breaks what someone else's audit module writes.
+#
+# The `slow` end-to-end test trains a real ResNet-18 and is excluded by default; run it locally
+# with `pytest -m slow`.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install (CPU torch, to keep the runner small and fast)
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[dev]"
+
+      - name: Run tests
+        # CIFAR-10 (170 MB) is not committed, so the 21 tests marked `requires_data` skip here
+        # and 244 run. Everything that guards the binding contracts -- run ids, the record
+        # schema, the metric registry, the unlearning method logic -- runs on synthetic data and
+        # is covered. The memorization scores are committed, so nothing skips on their account.
+        run: pytest -q -rs

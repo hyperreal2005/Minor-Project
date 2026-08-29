@@ -1,0 +1,104 @@
+# Audit protocols.
+#
+# PILOT entries are implementation plan §10's open decisions — settle each with one measurement
+# during week 6, then freeze. Every value here must be identical across all models being
+# compared, or the comparison is between protocols rather than between unlearning methods.
+
+behavior:
+  batch_size: 512
+  probe_sets: [forget, retain, test]
+  # Jensen-Shannon is computed on softmax outputs with this floor, so a zero-probability class
+  # cannot produce an infinite divergence.
+  prob_floor: 1.0e-12
+
+privacy:
+  # Attack A: the population attack the NeurIPS starter kit ships. One attacker for all
+  # examples. Included precisely because it is what the community commonly reports — and what
+  # systematically overstates privacy protection [21].
+  population:
+    features: [loss, confidence, entropy]
+    n_splits: 5
+    # Non-members for the attack are drawn from the test set, matched in size to the forget set.
+    nonmember_source: test
+
+  # Attack B: RMIA [27]. Per-example, and affordable because it retains power with few
+  # reference models where earlier per-example attacks collapse toward random guessing.
+  rmia:
+    n_references: 32
+    # Pilot check: TPR at low FPR must be stable when references are halved to 16 (Stage 6 gate).
+    stability_check_references: 16
+    gamma: 2.0
+    # PILOT — 0.001 or 0.01, chosen once and applied everywhere. Aggregate AUC hides exactly the
+    # per-example leakage this attack exists to expose, so the low-FPR point is the headline.
+    tpr_at_fpr: 0.01
+
+representation:
+  # penultimate is excluded: in ResNet-18 it is numerically identical to layer4 (avgpool is the
+  # same global average pool the taps already apply), so storing it would duplicate 512 floats
+  # per probe -- ~35% of activation storage for zero information.
+  layers: [layer1, layer2, layer3, layer4]
+  # PILOT — check CKA stability against 1000 and 5000 before freezing (open decision 4).
+  probe_size: 3000
+  probe_source: mixed        # forget + retain + test in equal parts
+  # Activations are global-average-pooled over spatial dims before storage. Raw layer1 output for
+  # 3000 probes is ~786 MB per model, which makes ~300 models untenable (plan §5). GAP discards
+  # spatial structure — an accepted convention for CKA on convnets, and a limitation the paper
+  # must state explicitly.
+  pooling: gap
+  primary_measure: cka_linear
+  # PILOT — pick whichever is most stable across oracle pairs (open decision 2). A
+  # representation claim is made only where the two measures agree; where they disagree, the
+  # disagreement is itself reported. CKA alone is not safe: its values move without
+  # corresponding change in functional behaviour [26].
+  second_measure: cka_rbf
+  rbf_sigma: median
+
+relearning:
+  # Identical optimiser, learning rate, batch order and step schedule across every arm. A
+  # difference here is a difference between protocols, not between models.
+  optimizer: sgd
+  lr: 0.01
+  momentum: 0.9
+  batch_size: 128
+  eval_steps: [0, 1, 2, 5, 10, 25, 50, 100]
+  # PILOT — whole forget set or a fixed-size subset. A subset is fairer across conditions of
+  # different size (open decision 3).
+  reintroduction: subset
+  reintroduction_size: 500
+  # normalized_recovery = (AUC(Mu) - AUC(Mr)) / (AUC(M0) - AUC(Mr))
+  #   0 -> recovers like a genuine retrain;  1 -> like the model that never forgot;
+  #   >1 -> the unlearning left a primed state.
+  arms: [method, oracle, original]
+  # Run once per condition as a protocol sanity check rather than in every cell: confirms the
+  # reintroduction data alone cannot produce recovery. Removes ~120 runs at no scientific cost.
+  randinit_sanity_check: true
+  t80_threshold: 0.8
+  # Guard: a recovery curve obtained by wrecking the model is not evidence of retained structure.
+  max_utility_drop_pp: 5.0
+
+calibration:
+  # Implementation plan §3.3 / master reference §15.5.
+  band_oracle_seeds: [200, 201, 202, 203, 204, 205, 206, 207, 208]
+  probe_oracle_seeds: [209, 210, 211]
+  # Thresholds are expressed in oracle-ensemble standard deviations, never as absolute values.
+  # A threshold a genuine retrained model fails is a broken threshold, not a strict one.
+  band_width_sd: 2.0
+  # Low-discriminability flag: fires when |m(M0) - mean(m(Mr))| falls inside the ensemble's own
+  # noise band, meaning the setting cannot distinguish unlearning quality. Marked, not scored.
+  low_discriminability_sd: 1.0
+
+agreement:
+  # The unit of analysis is the model instance, not the method. Ranking six methods and
+  # correlating those ranks cannot reach significance: at n=6 the minimum attainable two-sided
+  # p is 0.0028, and at the four methods of v1.0 it was 0.0833 — no possible data would have
+  # been significant. Correlating metric values across all (method x condition x seed) instances
+  # gives ~240 observations instead of six.
+  unit: model_instance
+  statistics: [kendall_tau, spearman]
+  bootstrap_resamples: 10000
+  bootstrap_ci: 0.95
+  # Confirmatory tests: metric ~ method + forget_condition + (1 | train_seed)
+  mixed_effects: true
+  # Per-setting rank tables are retained as DESCRIPTIVE displays only, never as the inferential
+  # backbone.
+  rank_tables: descriptive_only

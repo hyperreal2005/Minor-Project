@@ -1,0 +1,242 @@
+# ForgetCheck metric registry
+#
+# BINDING (implementation plan §4.4). This file is the project's advance commitment to what
+# "better" means for every metric, made before any result exists. `records.validate()` rejects
+# any metric name not listed here, so a typo or an unregistered metric fails at write time
+# rather than silently corrupting the agreement analysis months later.
+#
+# Adding a metric is a four-person decision, not a convenience.
+#
+# direction:
+#   higher_better     raw value, larger is better           (retain accuracy)
+#   lower_better      raw value, smaller is better           (JS divergence to oracle)
+#   closer_to_oracle  |value - oracle| is what matters, in either direction
+#                     -> the ONLY correct direction for anything the oracle also exhibits.
+#                        Forget accuracy is the canonical case: driving it to zero is NOT
+#                        better, because the retrained oracle does not score zero either.
+#
+# oracle_ref: does interpreting this metric require the oracle ensemble?
+#             If true, agreement.py converts it to a normalized oracle gap before ranking.
+#
+# family:     the audit family this metric belongs to. Cross-family disagreement is the
+#             between-family analysis; privacy_weak vs privacy_strong is the within-family one.
+
+behavior:
+  retain_acc:
+    family: behavior
+    direction: higher_better
+    oracle_ref: false
+    probe_sets: [retain]
+    doc: Accuracy on the retain set. A safety condition on every forgetting claim.
+  test_acc:
+    family: behavior
+    direction: higher_better
+    oracle_ref: false
+    probe_sets: [test]
+    doc: Held-out accuracy. Guards against a method that "forgets" by breaking the model.
+  macro_f1:
+    family: behavior
+    direction: higher_better
+    oracle_ref: false
+    probe_sets: [retain, test]
+    doc: Macro-averaged F1, to catch class-imbalanced damage that accuracy hides.
+  ce_loss:
+    family: behavior
+    direction: lower_better
+    oracle_ref: false
+    probe_sets: [retain, test]
+    doc: >
+      Mean cross-entropy on retain/test only. Deliberately NOT declared for the forget set:
+      there it would be rankable as lower_better, which is wrong — a low forget-set loss means
+      the model still fits the forgotten data. Use forget_loss, which is closer_to_oracle.
+  forget_acc:
+    family: behavior
+    direction: closer_to_oracle
+    oracle_ref: true
+    probe_sets: [forget]
+    doc: >
+      Accuracy on the forget set. NOT lower_better. A retrained model still classifies most
+      forgotten examples correctly because it learned the concept from other examples; driving
+      this to zero is over-forgetting, not success (master reference §3.2).
+  forget_loss:
+    family: behavior
+    direction: closer_to_oracle
+    oracle_ref: true
+    probe_sets: [forget]
+    doc: Mean cross-entropy on the forget set, relative to the oracle ensemble.
+  js_to_oracle:
+    family: behavior
+    direction: lower_better
+    oracle_ref: true
+    probe_sets: [forget, retain, test]
+    doc: Jensen-Shannon divergence between model and oracle output distributions.
+  js_to_original:
+    family: behavior
+    direction: higher_better
+    oracle_ref: false
+    probe_sets: [forget, retain, test]
+    doc: >
+      JS divergence to M0. Reported as a direction check: an unlearned model should move away
+      from the original and toward the oracle. Interpret only alongside js_to_oracle.
+  pred_agreement:
+    family: behavior
+    direction: higher_better
+    oracle_ref: true
+    probe_sets: [forget, retain, test]
+    doc: Fraction of inputs where the model and the oracle predict the same class.
+  logit_l2:
+    family: behavior
+    direction: lower_better
+    oracle_ref: true
+    probe_sets: [forget, retain, test]
+    doc: Mean L2 distance between logit vectors, model vs oracle.
+
+privacy_weak:
+  mia_auc_pop:
+    family: privacy_weak
+    direction: closer_to_oracle
+    oracle_ref: true
+    probe_sets: [forget]
+    doc: >
+      ROC-AUC of the population membership-inference attack (one attacker for all examples),
+      of the kind the NeurIPS starter kit ships. Included precisely because it is what the
+      community commonly reports — and what overstates privacy protection [21].
+  mia_acc_pop:
+    family: privacy_weak
+    direction: closer_to_oracle
+    oracle_ref: true
+    probe_sets: [forget]
+    doc: Balanced accuracy of the population attack.
+  mia_tpr_at_fpr_pop:
+    family: privacy_weak
+    direction: closer_to_oracle
+    oracle_ref: true
+    probe_sets: [forget]
+    doc: TPR at the fixed low FPR operating point declared in configs/audits.yaml.
+
+privacy_strong:
+  mia_auc_rmia:
+    family: privacy_strong
+    direction: closer_to_oracle
+    oracle_ref: true
+    probe_sets: [forget]
+    doc: ROC-AUC of the RMIA per-example attack [27], using the shadow reference models.
+  mia_acc_rmia:
+    family: privacy_strong
+    direction: closer_to_oracle
+    oracle_ref: true
+    probe_sets: [forget]
+    doc: Balanced accuracy of the RMIA attack.
+  mia_tpr_at_fpr_rmia:
+    family: privacy_strong
+    direction: closer_to_oracle
+    oracle_ref: true
+    probe_sets: [forget]
+    doc: >
+      TPR at fixed low FPR. The headline privacy number — aggregate AUC hides exactly the
+      per-example leakage this attack exists to expose.
+
+representation:
+  cka_linear:
+    family: representation
+    direction: closer_to_oracle
+    oracle_ref: true
+    probe_sets: [layer1, layer2, layer3, layer4, penultimate]
+    doc: >
+      Linear CKA between model and oracle activations, per layer, on GAP-pooled features.
+      Never interpret without the oracle-vs-oracle baseline: CKA can move without any change
+      in functional behaviour [26].
+  cka_rbf:
+    family: representation
+    direction: closer_to_oracle
+    oracle_ref: true
+    probe_sets: [layer1, layer2, layer3, layer4, penultimate]
+    doc: RBF-kernel CKA. Candidate second measure (open decision 2).
+  procrustes:
+    family: representation
+    direction: closer_to_oracle
+    oracle_ref: true
+    probe_sets: [layer1, layer2, layer3, layer4, penultimate]
+    doc: Orthogonal Procrustes distance. Candidate second measure (open decision 2).
+  dist_corr:
+    family: representation
+    direction: closer_to_oracle
+    oracle_ref: true
+    probe_sets: [layer1, layer2, layer3, layer4, penultimate]
+    doc: Distance correlation. Candidate second measure (open decision 2).
+  activation_l2:
+    family: representation
+    direction: closer_to_oracle
+    oracle_ref: true
+    probe_sets: [layer1, layer2, layer3, layer4, penultimate]
+    doc: Mean L2 distance between GAP-pooled activations, model vs oracle.
+
+reversibility:
+  relearn_auc:
+    family: reversibility
+    direction: closer_to_oracle
+    oracle_ref: true
+    probe_sets: [forget]
+    doc: Area under the relearning recovery curve, raw units.
+  relearn_norm:
+    family: reversibility
+    direction: lower_better
+    oracle_ref: true
+    probe_sets: [forget]
+    doc: >
+      (AUC(Mu) - AUC(Mr)) / (AUC(M0) - AUC(Mr)). 0 = recovers like a genuine retrain;
+      1 = recovers like the model that never forgot; >1 = unlearning left a primed state.
+      Already oracle-normalised by construction, so agreement.py does not re-normalise it.
+  relearn_t80:
+    family: reversibility
+    direction: closer_to_oracle
+    oracle_ref: true
+    probe_sets: [forget]
+    doc: Optimisation steps to recover 80% of M0's step-0 forget-set performance.
+  relearn_utility_drop:
+    family: reversibility
+    direction: lower_better
+    oracle_ref: false
+    probe_sets: [retain, test]
+    doc: >
+      Worst retain/test accuracy drop observed during relearning. Guard metric: a recovery
+      curve obtained by wrecking the model is not evidence of retained structure.
+
+meta:
+  canary_prob:
+    family: meta
+    direction: lower_better
+    oracle_ref: true
+    probe_sets: [canary]
+    doc: >
+      Mean P(assigned wrong label | canary input). The ground-truth signal: the oracle
+      provably never saw the association, so anything above the oracle band is unambiguously
+      residual influence.
+  canary_acc:
+    family: meta
+    direction: lower_better
+    oracle_ref: true
+    probe_sets: [canary]
+    doc: Fraction of canaries still predicted as their assigned wrong label.
+  runtime_s:
+    family: meta
+    direction: lower_better
+    oracle_ref: false
+    probe_sets: [all]
+    doc: Wall-clock seconds for the unlearning step itself, excluding audits.
+  oracle_fpr:
+    family: meta
+    direction: lower_better
+    oracle_ref: false
+    probe_sets: [all]
+    doc: >
+      Fraction of held-out genuine retrained oracles that this audit wrongly flags as
+      "not forgotten". An audit that fails a true retrain is broken, not strict (§15.5).
+  low_discriminability:
+    family: meta
+    direction: lower_better
+    oracle_ref: false
+    probe_sets: [all]
+    doc: >
+      1.0 if |m(M0) - mean(m(Mr))| falls inside the oracle ensemble's own noise band for this
+      metric, meaning the setting cannot distinguish unlearning quality. Marked, not scored.

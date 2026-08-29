@@ -1,0 +1,56 @@
+# --- environments -----------------------------------------------------------
+venv/
+.venv/
+env/
+*.egg-info/
+build/
+dist/
+
+# --- python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# --- datasets ---------------------------------------------------------------
+# CIFAR-10 is 170 MB and re-downloads in minutes from torchvision. Its hash is pinned in
+# configs/base.yaml, so a corrupt or substituted download fails loudly rather than silently
+# producing incomparable results.
+data/*
+!data/memorization/
+data/memorization/*
+!data/memorization/cifar10_memorization.npy
+
+# The memorization scores ARE committed, deliberately. They are 400 KB, they are the backbone of
+# the difficulty axis, and re-obtaining them means a 2 GB Google Drive download from the RUM
+# repository (of which 2 GB is an influence matrix we do not use). Committing them is what lets a
+# fresh Kaggle session clone and run without that detour. Hash pinned in configs/base.yaml.
+
+# --- experiment artefacts ---------------------------------------------------
+# Checkpoints and activations live in Kaggle Datasets, not git: ~15 GB of weights across the full
+# matrix. Every one is reproducible from its run_id plus the pinned commit.
+artifacts/
+*.pt
+*.pth
+*.npz
+
+# Result shards come off Kaggle and are collected for analysis rather than versioned. Keep the
+# directory structure so a fresh clone has somewhere to write.
+results/records/*
+results/curves/*
+results/figures/*
+!results/**/.gitkeep
+
+# --- editors / OS -----------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- credentials ------------------------------------------------------------
+kaggle.json
+.env
+*.pem
