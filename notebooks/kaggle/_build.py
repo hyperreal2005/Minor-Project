@@ -78,27 +78,49 @@ os.environ["PYTHONPATH"] = SRC + os.pathsep + os.environ.get("PYTHONPATH", "")
 import forgetcheck
 print("forgetcheck imported from:", Path(forgetcheck.__file__).parent)
 
-# CIFAR-10 downloads at roughly 130 kB/s on Kaggle -- about 20 minutes, repeated on every
-# session and every account. Attaching it as a Dataset (Add Input -> Datasets) skips that
-# entirely: torchvision checks md5s of the extracted folder and only downloads if it is missing
-# or corrupt. See 00_verify_setup.ipynb for how to create the dataset once.
-CIFAR_IN = Path("/kaggle/input/datasets/pranitdeepsingh/forgetcheck-cifar10")
-if CIFAR_IN.exists():
-    (REPO_DIR / "data").mkdir(parents=True, exist_ok=True)
-    !cp -r $CIFAR_IN/cifar-10-batches-py $REPO_DIR/data/ 2>/dev/null || true
-    print("CIFAR-10 restored from the attached dataset - no download needed")
-else:
-    print("no CIFAR-10 dataset attached - it will download (~20 min)")
+import shutil
 
-# Attach a previous artefact dataset (Add Input -> Datasets) so completed runs are skipped
-# rather than recomputed. Without it, every session starts from nothing.
-ARTIFACTS_IN = Path("/kaggle/input/forgetcheck-artifacts")
-if ARTIFACTS_IN.exists():
-    !cp -r $ARTIFACTS_IN/artifacts $REPO_DIR/ 2>/dev/null || true
-    !cp -r $ARTIFACTS_IN/results   $REPO_DIR/ 2>/dev/null || true
-    print("restored artefacts from a previous session")
-else:
-    print("no previous artefacts attached - starting fresh")
+# CIFAR-10 downloads at 100-130 kB/s on Kaggle -- 20 to 30 minutes, repeated on every session and
+# every account. Attaching it as a Dataset (Add Input -> Datasets) skips that entirely:
+# torchvision checks the md5s of the extracted folder and only downloads if it is missing or
+# corrupt. 00_verify_setup.ipynb has a cell that creates the dataset once.
+#
+# Kaggle's mount layout varies with how a dataset was uploaded -- it may sit at
+# /kaggle/input/<slug>/, or nested as /kaggle/input/datasets/<user>/<slug>/, or one level deeper
+# again if the dataset was created from a notebook's output directory. So SEARCH for the folder
+# rather than assume a path (`**/` matches at any depth, including directly under /kaggle/input),
+# and then verify the copy actually landed. An earlier version of this cell
+# used `cp ... 2>/dev/null || true` followed by an unconditional success message: a failed copy
+# reported success and CIFAR silently re-downloaded anyway, costing ~28 minutes while the output
+# claimed otherwise. Never report an outcome that was not checked.
+def _restore(name, dest):
+    "Find `name` anywhere under /kaggle/input and copy it to `dest`. Returns whether it landed."
+    dest = Path(dest)
+    if dest.is_dir():
+        print(f"{name}: already present")
+        return True
+    found = sorted(Path("/kaggle/input").glob(f"**/{name}"))
+    if not found:
+        return False
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(found[0], dest, dirs_exist_ok=True)
+    print(f"{name}: copied from {found[0]}")
+    return True
+
+CIFAR_DEST = REPO_DIR / "data" / "cifar-10-batches-py"
+if not _restore("cifar-10-batches-py", CIFAR_DEST):
+    print("!! cifar-10-batches-py not found under /kaggle/input -- it will DOWNLOAD (~25 min)")
+    print("!! attached:", [p.name for p in sorted(Path("/kaggle/input").glob("*"))] or "(none)")
+
+# Verify rather than trust: torchvision needs 5 training batches plus test_batch.
+if CIFAR_DEST.is_dir():
+    n = len(list(CIFAR_DEST.glob("*_batch*")))
+    print(f"   {n}/6 batch files{'' if n == 6 else '  <-- INCOMPLETE, will re-download'}")
+
+# Previous artefacts, so runs another session already finished are skipped rather than repeated.
+for _name in ("artifacts", "results"):
+    if not _restore(_name, REPO_DIR / _name):
+        print(f"{_name}: none attached - starting fresh")
 
 import torch
 if torch.cuda.is_available():
@@ -107,7 +129,6 @@ else:
     print("!! running on CPU. Set Settings -> Accelerator -> GPU.")
     print("!! On CPU one 30-epoch training run takes ~4.8 hours instead of ~12 minutes.")
 
-import shutil
 CLI = "forgetcheck" if shutil.which("forgetcheck") else f"{sys.executable} -m forgetcheck.cli"
 print("cli:", CLI)
 """
@@ -322,8 +343,31 @@ import pandas as pd
 df = read_records("results/records")
 print(f"{len(df)} rows across {df['run_id'].nunique()} runs\\n")
 
-wide = df.pivot_table(index=["run_id", "role"], columns="metric", values="value")
+# Pivot on (metric, probe_set), NOT metric alone. macro_f1 and ce_loss are each recorded for
+# both the retain and test probe sets, so collapsing on metric silently averages two different
+# quantities into one plausible-looking number.
+wide = df.pivot_table(
+    index=["run_id", "role"], columns=["metric", "probe_set"], values="value"
+)
 wide.round(4)
+"""),
+        md("""\
+### What to look for
+
+**`forget_acc` is the experiment's whole premise made visible.** It is what a model that *never
+saw* the forget set nonetheless scores on it:
+
+* `mem-low-3000` near **1.00** — the oracle gets them right anyway, because they were learnable
+  from other examples. M₀ ≈ M_r here, so there is nothing for any audit to detect. That is the
+  negative control behaving exactly as designed.
+* `mem-high-3000` near **0.56** — the oracle largely fails on these, so M₀ and M_r genuinely
+  differ. This is where the audits have something to disagree about.
+
+If those two are not far apart, stop: the difficulty axis is not working and nothing downstream
+will mean much.
+
+**Seed spread** is the Stage 3 gate (≤ 0.5 pp) and the raw material for every oracle band — it is
+reported, never averaged away.
 """),
         code("""\
 # Seed-to-seed spread. This is not a diagnostic to average away -- it is the raw material for

@@ -148,10 +148,27 @@ class Context:
         return {
             "dataset": d["name"],
             "arch": self._base["model"]["arch"],
-            "device": self.device,
+            # Report what is *available*, not just what this invocation asked for. `status` takes
+            # no --device, so echoing the CLI default printed "device: cpu" straight after a run
+            # that had plainly used a GPU -- true of the status call, useless as information, and
+            # alarming to read.
+            "accelerator": _accelerator(),
+            "requested_device": self.device,
             "artifacts": str(self.store.root),
             "records": str(self.records_dir),
             "epochs": self.train_config.epochs,
             "train_seeds": self.seeds["train"],
             "primary_condition": self.primary_condition,
         }
+
+
+def _accelerator() -> str:
+    """What torch can actually see. Cheap: torch is already imported by anything that trains."""
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return f"cuda ({torch.cuda.get_device_name(0)})"
+        return "cpu only"
+    except Exception:
+        return "unknown"

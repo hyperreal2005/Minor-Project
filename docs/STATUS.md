@@ -191,6 +191,22 @@ The setup cell now inserts `src/` into `sys.path` directly, calls `importlib.inv
 and exports `PYTHONPATH` for the `!` subshells. It also resolves the CLI to
 `python -m forgetcheck.cli` if the console script is not on PATH.
 
+### The CIFAR restore reported success without checking — fixed
+
+The setup cell used `cp -r ... 2>/dev/null || true` followed by an unconditional
+`print("restored")`. Kaggle's mount layout varies with how a dataset was uploaded, so the source
+path did not exist; the copy failed, the error was discarded, `|| true` swallowed the exit code,
+and the message claimed success anyway. CIFAR then silently re-downloaded — **28 minutes**, while
+the output said no download was needed.
+
+Now it searches for `cifar-10-batches-py` anywhere under `/kaggle/input`, copies with
+`shutil.copytree`, and verifies 6/6 batch files are present before reporting anything. The same
+helper handles `artifacts/` and `results/`, which had the identical flaw.
+
+The general lesson, worth keeping: **never print an outcome that was not checked.** A silent
+failure that reports success is worse than a loud one, because it costs time *and* misdirects the
+investigation — here it sent us looking at CLI path configuration, which was correct all along.
+
 ### `--dry-run` reported "would run 0" — fixed
 
 The dry-run branch of `_execute` listed `[todo]` items and then reported "would run 0", because
