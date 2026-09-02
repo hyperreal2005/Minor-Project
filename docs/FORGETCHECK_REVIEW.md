@@ -189,11 +189,19 @@ it is why they could report p = 0.003. Then:
 ### 🔴 B3 — Random 1% (and likely 5%) forget sets are near-degenerate
 
 The document already anticipates this in Section 15.4's low-discriminability safeguard, which is
-to its credit. What it underestimates is *how much* of the matrix is affected. The Google position
-note makes the mechanism explicit: for low-memorization examples, the retrained-from-scratch model
-still predicts them correctly, so the ideal untraining solution is **effectively no change from
-the original model at all**. A random CIFAR-10 subset is overwhelmingly low-memorization. So
-M₀ ≈ M_r, every normalized oracle-gap denominator collapses, and the safeguard fires on most cells.
+to its credit. The Google position note makes the mechanism explicit: for low-memorization
+examples, the retrained-from-scratch model still predicts them correctly, so the ideal untraining
+solution is **effectively no change from the original model at all**. Where that holds, M₀ ≈ M_r,
+the normalized oracle-gap denominator collapses, and the safeguard fires.
+
+> **Corrected 29 Aug 2026, after measuring the real scores.** This finding originally claimed a
+> random CIFAR-10 subset is *"overwhelmingly low-memorization"* and therefore near-degenerate.
+> That was an inference, and it was wrong. Measured: 26.6% of CIFAR-10 falls below 0.01, but
+> **24.9% sits above 0.5**, and a random 3000-example forget set has mean memorization 0.276 with
+> 731 examples as memorized as the high stratum. Random conditions are a *mixture* — they dilute
+> the signal rather than lacking it. The recommendation below is unchanged, because a pure
+> high-memorization stratum still concentrates what random dilutes, but the effect is one of
+> degree and the random conditions should not be written up as empty.
 
 Wichert & Sikdar sharpen it further: the influential-vs-random gap *shrinks as forget-set size
 grows*. So the random-vs-hard contrast is most visible at *small* forget sets, which is the

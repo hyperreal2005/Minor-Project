@@ -193,31 +193,45 @@ def _ctx(args) -> Context:
 
 
 def _execute(items: Iterable[WorkItem], *, dry_run: bool, store) -> int:
+    """Run (or, under ``dry_run``, list) a queue of work items.
+
+    Anything already in the store is skipped rather than recomputed — that is what makes a
+    Kaggle session resumable, and what lets accounts safely re-derive a redistributed work list.
+
+    One failure does not stop the queue: a session that dies on run 12 of 21 should still produce
+    the other 20. Failures are counted and reported, and the exit code is non-zero so a notebook
+    cell shows red.
+    """
     items = list(items)
-    done = skipped = failed = 0
+    todo = skipped = failed = 0
+
     for i, item in enumerate(items, 1):
-        exists = store.has_checkpoint(item.run_id)
-        if dry_run:
-            mark = "have" if exists else "todo"
-            print(f"  [{mark}] {item.run_id}")
-            skipped += exists
-            continue
-        if exists:
+        if store.has_checkpoint(item.run_id):
             skipped += 1
+            if dry_run:
+                print(f"  [have] {item.run_id}")
             continue
+
+        todo += 1
+        if dry_run:
+            print(f"  [todo] {item.run_id}")
+            continue
+
         print(f"[{i}/{len(items)}] {item.run_id} ...", flush=True)
         t0 = time.perf_counter()
         try:
             item.run()
-        except Exception as exc:  # keep the queue moving; one bad cell is not the whole session
+        except Exception as exc:  # keep the queue moving; one bad run is not the whole session
             failed += 1
             print(f"    FAILED: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
             continue
-        done += 1
         print(f"    done in {time.perf_counter() - t0:.1f}s", flush=True)
 
-    verb = "would run" if dry_run else "ran"
-    print(f"\n{verb} {done}, skipped {skipped} already present, {failed} failed")
+    if dry_run:
+        print(f"\nwould run {todo}, {skipped} already present ({len(items)} total)")
+    else:
+        ran = todo - failed
+        print(f"\nran {ran}, skipped {skipped} already present, {failed} failed")
     return 1 if failed else 0
 
 

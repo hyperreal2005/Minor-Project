@@ -213,3 +213,68 @@ def test_unlearning_without_its_base_model_fails_loudly(tiny_ctx):
             bundle=tiny_ctx.bundle, seed=0, store=tiny_ctx.store,
             records_dir=tiny_ctx.records_dir,
         )
+
+
+class TestExecuteReporting:
+    """The summary line must match what was actually listed.
+
+    `--dry-run` previously printed a list of [todo] items and then reported "would run 0",
+    because the dry-run branch never counted them. Purely a reporting bug -- nothing was
+    mis-planned -- but misleading enough that someone could conclude no work was scheduled.
+    """
+
+    @staticmethod
+    def _store(present=()):
+        class S:
+            def has_checkpoint(self, rid):
+                return rid in present
+        return S()
+
+    @staticmethod
+    def _items(n, fail_at=()):
+        def make(i):
+            def run():
+                if i in fail_at:
+                    raise RuntimeError(f"boom {i}")
+            return WorkItem(f"c10r18__base__full__none__train{i}", "base", run)
+        return [make(i) for i in range(n)]
+
+    def test_dry_run_counts_todo_items(self, capsys):
+        from forgetcheck.cli import _execute
+
+        _execute(self._items(5), dry_run=True, store=self._store())
+        out = capsys.readouterr().out
+        assert out.count("[todo]") == 5
+        assert "would run 5, 0 already present (5 total)" in out
+
+    def test_dry_run_separates_have_from_todo(self, capsys):
+        from forgetcheck.cli import _execute
+
+        present = {"c10r18__base__full__none__train0", "c10r18__base__full__none__train1"}
+        _execute(self._items(5), dry_run=True, store=self._store(present))
+        out = capsys.readouterr().out
+        assert out.count("[have]") == 2 and out.count("[todo]") == 3
+        assert "would run 3, 2 already present (5 total)" in out
+
+    def test_real_run_counts_what_ran(self, capsys):
+        from forgetcheck.cli import _execute
+
+        rc = _execute(self._items(4), dry_run=False, store=self._store())
+        assert rc == 0
+        assert "ran 4, skipped 0 already present, 0 failed" in capsys.readouterr().out
+
+    def test_one_failure_does_not_stop_the_queue(self, capsys):
+        # A session that dies on run 2 of 4 should still produce the other 3.
+        from forgetcheck.cli import _execute
+
+        rc = _execute(self._items(4, fail_at={1}), dry_run=False, store=self._store())
+        assert rc == 1, "a failure must surface as a non-zero exit code"
+        assert "ran 3, skipped 0 already present, 1 failed" in capsys.readouterr().out
+
+    def test_counts_are_consistent(self, capsys):
+        from forgetcheck.cli import _execute
+
+        present = {"c10r18__base__full__none__train0"}
+        _execute(self._items(5, fail_at={2}), dry_run=False, store=self._store(present))
+        out = capsys.readouterr().out
+        assert "ran 3, skipped 1 already present, 1 failed" in out  # 3 + 1 + 1 == 5

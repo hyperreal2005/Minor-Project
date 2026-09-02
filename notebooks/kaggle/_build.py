@@ -82,7 +82,7 @@ print("forgetcheck imported from:", Path(forgetcheck.__file__).parent)
 # session and every account. Attaching it as a Dataset (Add Input -> Datasets) skips that
 # entirely: torchvision checks md5s of the extracted folder and only downloads if it is missing
 # or corrupt. See 00_verify_setup.ipynb for how to create the dataset once.
-CIFAR_IN = Path("/kaggle/input/forgetcheck-cifar10")
+CIFAR_IN = Path("/kaggle/input/datasets/pranitdeepsingh/forgetcheck-cifar10")
 if CIFAR_IN.exists():
     (REPO_DIR / "data").mkdir(parents=True, exist_ok=True)
     !cp -r $CIFAR_IN/cifar-10-batches-py $REPO_DIR/data/ 2>/dev/null || true

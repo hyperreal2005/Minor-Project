@@ -1,6 +1,6 @@
 # ForgetCheck — implementation status
 
-**Updated:** 27 August 2026 (second pass)
+**Updated:** 29 August 2026
 **Tracks:** [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) stages and gates
 
 Read this first when resuming work. It records what exists, what its gate says, and what is
@@ -22,7 +22,7 @@ genuinely unresolved — as opposed to merely unwritten.
 | 7 — Calibration & validity | D | not started | — |
 | 8 — Analysis | D | not started | — |
 
-**Test suite: 265 passing** (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
+**Test suite: 270 passing** (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
 
 ---
 
@@ -190,6 +190,40 @@ read the `.pth` — so the failure looked stranger than it was.
 The setup cell now inserts `src/` into `sys.path` directly, calls `importlib.invalidate_caches()`,
 and exports `PYTHONPATH` for the `!` subshells. It also resolves the CLI to
 `python -m forgetcheck.cli` if the console script is not on PATH.
+
+### `--dry-run` reported "would run 0" — fixed
+
+The dry-run branch of `_execute` listed `[todo]` items and then reported "would run 0", because
+it never counted them. Nothing was mis-planned; it was purely a reporting bug, but misleading
+enough that someone could conclude no work was scheduled. Now reports
+`would run N, M already present (N+M total)`, with tests covering dry-run counting, the
+have/todo split, and the invariant that ran + skipped + failed equals the queue length.
+
+### Correction, 29 August 2026 — measured, after the real scores arrived
+
+The claim that a random CIFAR-10 subset is "overwhelmingly low-memorization" **was wrong**. It
+was an inference from the untraining paper's argument, made before the real Feldman-Zhang scores
+were in hand. The measured distribution does not support it:
+
+| memorization | share of CIFAR-10 |
+|---|---|
+| < 0.01 (effectively non-memorized) | 26.6% |
+| 0.01 – 0.5 | 48.5% |
+| > 0.5 (strongly memorized) | 24.9% |
+
+Population mean 0.279, median 0.133. A random 3000-example forget set therefore has mean
+memorization **0.276**, and **731 of its 3000 examples are as memorized as the mem-high
+stratum**. It is a *mixture*, not a uniformly easy case.
+
+What this changes, and what it does not:
+
+- **The design is unchanged.** The difficulty axis is still correctly primary, and
+  `mem-low-3000` remains an exact negative control (mean 0.0000, sd 0.0000).
+- **The reason changes.** A pure high-memorization stratum *concentrates* signal that a random
+  set *dilutes*. That is a difference of degree, not of kind.
+- **The expectation changes.** The random conditions should carry real signal, roughly a quarter
+  of it from strongly-memorized examples. They will be less discriminative than the high stratum,
+  but not empty. Do not write them up as though nothing was detectable there.
 
 ## Open questions
 
