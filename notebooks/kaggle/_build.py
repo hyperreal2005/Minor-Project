@@ -94,7 +94,7 @@ import shutil
 # reported success and CIFAR silently re-downloaded anyway, costing ~28 minutes while the output
 # claimed otherwise. Never report an outcome that was not checked.
 def _restore(name, dest):
-    "Find `name` anywhere under /kaggle/input and copy it to `dest`. Returns whether it landed."
+    "Find directory `name` anywhere under /kaggle/input and copy it to `dest`."
     dest = Path(dest)
     if dest.is_dir():
         print(f"{name}: already present")
@@ -107,9 +107,34 @@ def _restore(name, dest):
     print(f"{name}: copied from {found[0]}")
     return True
 
+# Restore CIFAR-10 by locating its *contents*, not its folder name.
+#
+# Kaggle does not necessarily preserve the directory that was uploaded: the batches may end up
+# inside `cifar-10-batches-py/`, or flattened straight to the dataset root. Searching for the
+# folder name therefore reports "not found" while the data sits one level up in plain view --
+# which is exactly what happened here, and cost a 25-minute re-download.
+#
+# So anchor on a file that must exist (`test_batch`) and take whatever directory contains it.
+# That handles both layouts, and any future one.
+def _restore_cifar(dest):
+    dest = Path(dest)
+    if dest.is_dir() and len(list(dest.glob("*_batch*"))) == 6:
+        print("cifar-10: already present")
+        return True
+    hits = sorted(Path("/kaggle/input").glob("**/test_batch"))
+    if not hits:
+        return False
+    src = hits[0].parent
+    dest.mkdir(parents=True, exist_ok=True)
+    for p in src.iterdir():
+        if p.is_file():
+            shutil.copy2(p, dest / p.name)
+    print(f"cifar-10: copied from {src}")
+    return True
+
 CIFAR_DEST = REPO_DIR / "data" / "cifar-10-batches-py"
-if not _restore("cifar-10-batches-py", CIFAR_DEST):
-    print("!! cifar-10-batches-py not found under /kaggle/input -- it will DOWNLOAD (~25 min)")
+if not _restore_cifar(CIFAR_DEST):
+    print("!! no CIFAR-10 batches found under /kaggle/input -- it will DOWNLOAD (~25 min)")
     print("!! attached:", [p.name for p in sorted(Path("/kaggle/input").glob("*"))] or "(none)")
 
 # Verify rather than trust: torchvision needs 5 training batches plus test_batch.
@@ -145,10 +170,26 @@ PUSH = """\
 import json
 from pathlib import Path
 
+import shutil
+
 OUT = Path("/kaggle/working/to_upload")
 OUT.mkdir(exist_ok=True)
-!cp -r /kaggle/working/Minor-Project/artifacts $OUT/ 2>/dev/null || true
-!cp -r /kaggle/working/Minor-Project/results   $OUT/ 2>/dev/null || true
+
+# Copy and verify. The same `cp ... 2>/dev/null || true` pattern that lived here once produced a
+# CIFAR dataset containing nothing but its metadata file, and said so to nobody.
+staged = {}
+for name in ("artifacts", "results"):
+    src = Path("/kaggle/working/Minor-Project") / name
+    if src.is_dir():
+        shutil.copytree(src, OUT / name, dirs_exist_ok=True)
+        staged[name] = sum(1 for p in (OUT / name).rglob("*") if p.is_file())
+    else:
+        staged[name] = 0
+
+for name, n in staged.items():
+    print(f"{name}: {n} files staged{'  <-- nothing to upload' if n == 0 else ''}")
+if not staged.get("artifacts"):
+    raise SystemExit("no artifacts to upload; did the queue cell actually run?")
 
 META = OUT / "dataset-metadata.json"
 META.write_text(json.dumps({
@@ -270,22 +311,40 @@ token at `~/.kaggle/kaggle.json` — Kaggle → Account → Create New API Token
         code("""\
 from pathlib import Path
 
-CIFAR_OUT = Path("/kaggle/working/cifar10_dataset")
-CIFAR_OUT.mkdir(exist_ok=True)
-
-# Only the extracted folder is needed -- torchvision verifies its md5s and skips the download.
-# The .tar.gz would just double the size.
-!cp -r /kaggle/working/Minor-Project/data/cifar-10-batches-py $CIFAR_OUT/ 2>/dev/null || true
-
 import json
+import shutil
+from pathlib import Path
+
+SRC_CIFAR = Path("/kaggle/working/Minor-Project/data/cifar-10-batches-py")
+CIFAR_OUT = Path("/kaggle/working/cifar10_dataset")
+
+# Copy with shutil and CHECK, rather than `cp ... 2>/dev/null || true`. That pattern created a
+# dataset containing only the metadata file, silently, and the failure only surfaced sessions
+# later as a 25-minute re-download on another account.
+if not SRC_CIFAR.is_dir():
+    raise SystemExit(
+        f"{SRC_CIFAR} does not exist. Run the verification cells above first so torchvision "
+        "downloads and extracts CIFAR-10, then re-run this cell."
+    )
+
+CIFAR_OUT.mkdir(exist_ok=True)
+# Only the extracted folder is needed -- torchvision verifies its md5s and skips the download.
+# The .tar.gz would just double the size for no benefit.
+shutil.copytree(SRC_CIFAR, CIFAR_OUT / "cifar-10-batches-py", dirs_exist_ok=True)
+
 (CIFAR_OUT / "dataset-metadata.json").write_text(json.dumps({
     "title": "forgetcheck-cifar10",
     "id": "YOUR-KAGGLE-USERNAME/forgetcheck-cifar10",   # <-- your username
     "licenses": [{"name": "CC0-1.0"}],
 }, indent=2))
 
-!du -sh $CIFAR_OUT
-print("\\nthen run:  !kaggle datasets create -p", CIFAR_OUT, "--dir-mode zip")
+# Verify before uploading. An empty dataset is worse than no dataset: it looks attached, so
+# nobody investigates, and every session silently re-downloads.
+batches = sorted(p.name for p in (CIFAR_OUT / "cifar-10-batches-py").glob("*_batch*"))
+size_mb = sum(p.stat().st_size for p in CIFAR_OUT.rglob("*") if p.is_file()) / 1e6
+print(f"staged {len(batches)}/6 batch files, {size_mb:.0f} MB")
+assert len(batches) == 6, f"expected 6 batch files, staged {batches} -- do NOT upload this"
+print(f"\\nready. Then run:  !kaggle datasets create -p {CIFAR_OUT} --dir-mode zip")
 print("afterwards, attach it via Add Input -> Datasets in every notebook")
 """),
         md("""\

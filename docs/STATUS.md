@@ -191,6 +191,22 @@ The setup cell now inserts `src/` into `sys.path` directly, calls `importlib.inv
 and exports `PYTHONPATH` for the `!` subshells. It also resolves the CLI to
 `python -m forgetcheck.cli` if the console script is not on PATH.
 
+### Kaggle flattens uploaded directories — anchor on contents, not folder names
+
+Restoring CIFAR from an attached Dataset failed with "not found" while the data was plainly
+there. Kaggle had uploaded the *contents* of `cifar-10-batches-py/` to the dataset root rather
+than preserving the folder, so a search for a directory of that name matched nothing.
+
+The give-away was that `artifacts` restored successfully from the same dataset at the same
+nesting depth in the same run — so the search mechanism was never at fault, only what it was
+searching *for*.
+
+Fixed by anchoring on a file that must exist (`test_batch`) and taking whatever directory
+contains it. Verified against three layouts: folder preserved, flattened, and flat mount.
+
+The general lesson: **do not identify data by the name of its container.** Containers get
+renamed, flattened and re-wrapped by whatever moves them. Identify it by something intrinsic.
+
 ### The CIFAR restore reported success without checking — fixed
 
 The setup cell used `cp -r ... 2>/dev/null || true` followed by an unconditional
