@@ -156,6 +156,17 @@ class TestContext:
         with pytest.raises(RuntimeError, match="hash to"):
             _ = tiny_ctx.memorization
 
+    def test_accepts_string_paths(self, tiny_ctx):
+        # A dataclass field typed `Path` accepts a str happily, and the failure then surfaces
+        # much later as "unsupported operand type(s) for /: 'str' and 'str'" from a property
+        # that looks unrelated. Callers legitimately pass strings -- notebooks especially.
+        from forgetcheck.config import Context
+
+        ctx = Context(configs=str(tiny_ctx.configs), root=str(tiny_ctx.root))
+        assert isinstance(ctx.configs, Path) and isinstance(ctx.root, Path)
+        assert ctx.store.root  # the property that used to blow up
+        assert ctx.records_dir
+
     def test_forget_indices_are_cached_and_verified(self, tiny_ctx):
         a = tiny_ctx.forget_indices("mem-high-3000")
         b = tiny_ctx.forget_indices("mem-high-3000")   # second call hits the cache check

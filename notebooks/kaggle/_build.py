@@ -479,10 +479,12 @@ CHECK_SHADOW = """\
 # OUT coverage: for each example, how many shadows did NOT train on it? Those are the reference
 # models RMIA scores a target against, so this is the property that makes the attack possible.
 import numpy as np
+from pathlib import Path
+
 from forgetcheck.config import Context, find_configs
 from forgetcheck.train import shadow_indices
 
-ctx = Context(configs=find_configs(), root=".")
+ctx = Context(configs=find_configs(), root=Path("."))
 n_train = ctx.base["dataset"]["n_train"]
 total = ctx.base["shadows"]["count"]
 

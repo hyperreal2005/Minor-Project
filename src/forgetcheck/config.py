@@ -60,6 +60,12 @@ class Context:
     _audits: dict = None
 
     def __post_init__(self) -> None:
+        # Coerce rather than trust the annotations. A dataclass field typed `Path` accepts a str
+        # happily, and the failure then surfaces much later as
+        # `TypeError: unsupported operand type(s) for /: 'str' and 'str'` from a property that
+        # looks unrelated. Callers legitimately pass strings -- notebooks especially.
+        self.configs = Path(self.configs)
+        self.root = Path(self.root)
         self._base = load_yaml(self.configs / "base.yaml")
         self._audits = load_yaml(self.configs / "audits.yaml")
 
