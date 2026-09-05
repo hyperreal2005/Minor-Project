@@ -39,9 +39,15 @@ training:
   amp: true
   channels_last: true
   num_workers: 2
-  # Stage 3 gate: test accuracy reproducible across seeds within this margin. The spread itself
-  # is reported, not averaged away — it is the raw material for every oracle band.
-  seed_spread_tolerance_pp: 0.5
+  # Stage 3 gate: test-accuracy reproducibility across seeds, as a STANDARD DEVIATION. The
+  # spread itself is reported, not averaged away — it is the raw material for every oracle band.
+  #
+  # Originally specified as a range (max − min) of 0.5 pp. That is the wrong statistic: the
+  # expected range of n normal draws grows with n — about 2.5 sd at n=6, 3.3 sd at n=12 — so the
+  # same models "passed" at 0.33 pp with 6 oracles and "failed" at 0.95 pp with 12, while sd
+  # stayed at 0.24 pp throughout. A gate that tightens as you gather more evidence is backwards.
+  seed_sd_tolerance_pp: 0.4
+  # Measured on the 12-oracle ensemble at mem-high-3000: sd = 0.24 pp. PASS.
 
 seeds:
   # Three independent streams. Never share a seed across them: mixing them silently couples

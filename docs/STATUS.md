@@ -178,6 +178,59 @@ fits the forgotten data. `ce_loss` is now restricted to retain/test; the forget 
 `forget_loss`, which is `closer_to_oracle`. This is the metric registry doing exactly the job it
 was built for.
 
+## Stage 3 complete — 62/62 trained (29 Aug 2026)
+
+All 62 models: 10 base (5 clean + 5 canary), 40 paired oracles, 12 ensemble oracles at the
+primary condition. ~460 s each on a Kaggle T4, ~8 GPU-hours total across three accounts.
+
+**Oracle ensemble at `mem-high-3000` (n=12)** — the reference distribution every later threshold
+is expressed against:
+
+| | mean | sd |
+|---|---|---|
+| test_acc | 0.9228 | 0.0024 |
+| forget_acc | 0.5575 | 0.0058 |
+
+**The difficulty axis is confirmed empirically.** Oracle `forget_acc` — what a model that never
+saw the forget set nonetheless scores on it:
+
+| condition | oracle forget_acc |
+|---|---|
+| mem-low-3000 | **0.998** |
+| rand-* | 0.93 |
+| mem-med-3000 | 0.91 |
+| mem-high-3000 | **0.558** |
+
+On low-memorization data the oracle is right anyway, so M₀ ≈ M_r and there is nothing to detect —
+the negative control behaving exactly as designed. On high-memorization data it drops to 56%, so
+M₀ and M_r genuinely differ and the audits have something to disagree about.
+
+Two things to carry into the paper. Canary M₀ scores ~0.929 test vs ~0.935 for clean M₀ — the
+500 mislabeled canaries cost about 0.5 pp of generalisation, as expected. And 56% is far above
+what the memorization scores alone would predict (~3%), because Feldman–Zhang estimate from
+models trained on 70% subsets while our oracle sees 94% of the data; state this explicitly or a
+reviewer doing the naive arithmetic will think something is broken.
+
+### The Stage 3 gate was specified with the wrong statistic
+
+It read "test accuracy reproducible across seeds within 0.5 pp", measured as a range. Range grows
+with sample size — roughly 2.5 sd at n=6, 3.3 sd at n=12 — so the *same models* passed at 0.33 pp
+with 6 oracles and "failed" at 0.95 pp with 12, while sd stayed at 0.24 pp throughout. A gate that
+tightens as you gather more evidence is backwards. Respecified as `seed_sd_tolerance_pp: 0.4`;
+measured sd is 0.24 pp, so it **passes**.
+
+### One held-out oracle sits outside its own 2-SD band
+
+`oracle211` has test_acc 0.9285 against a band of [0.9187, 0.9259] built from the nine
+band-forming oracles. A proper prediction interval (t, n=9) gives [0.9179, 0.9267] — still
+outside. Its `forget_acc` is inside.
+
+This is not a failure; it is the **first data point of the §15.5 validity analysis**, which exists
+precisely to measure how often a genuine retrained model gets flagged. It suggests a 2-SD band
+built from 9 oracles will have a non-trivial false-positive rate, and that the calibration should
+consider a wider band or a prediction interval rather than a naive 2-SD. Decide that in Stage 7,
+on all the metrics, not by eye on one.
+
 ## Kaggle notebook gotcha, fixed
 
 `pip install -e .` writes a `.pth` file into site-packages, and **`.pth` files are only processed

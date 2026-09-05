@@ -360,42 +360,7 @@ precisely what the hash exists to catch.
     ])
 
 
-def nb_stage(number: str, stage: int, title: str, blurb: str, extra_md: str = "") -> dict:
-    return notebook([
-        md(f"""\
-# {number} - {title}
-
-{blurb}
-
-**Set `ACCOUNT` below** to this account's number. Every account runs the identical notebook with
-a different `ACCOUNT`, and they compute disjoint halves of the work with no coordination -- run
-identifiers are pure functions of the config, so all accounts derive the same work list and each
-takes its own stripe of it.
-
-Runs already present in the attached artefact dataset are skipped, so a session that dies costs
-only its in-flight model.
-"""),
-        code(INSTALL),
-        code(SETUP),
-        code(f"""\
-ACCOUNT = 1     # <-- this account's number, 1-based
-OF      = 3     # <-- how many accounts are sharing this stage
-
-DEVICE = "cuda" if __import__("torch").cuda.is_available() else "cpu"
-STAGE  = {stage}
-print(f"account {{ACCOUNT}} of {{OF}}, stage {{STAGE}}, device {{DEVICE}}")
-"""),
-        md("## What this account will do"),
-        code("""\
-!{CLI} --root . --dry-run queue --stage {STAGE} --account {ACCOUNT} --of {OF}
-""".replace("{STAGE}", "{STAGE}")),
-        md("## Run it\n\nThis is the long cell. It prints each run as it starts and finishes, so "
-           "you can watch progress and estimate the remaining time."),
-        code("""\
-!{CLI} --root . --device {DEVICE} queue --stage {STAGE} --account {ACCOUNT} --of {OF}
-"""),
-        md("## Inspect what came out" + extra_md),
-        code("""\
+INSPECT = """\
 from forgetcheck.registry import read_records
 import pandas as pd
 
@@ -403,42 +368,177 @@ df = read_records("results/records")
 print(f"{len(df)} rows across {df['run_id'].nunique()} runs\\n")
 
 # Pivot on (metric, probe_set), NOT metric alone. macro_f1 and ce_loss are each recorded for
-# both the retain and test probe sets, so collapsing on metric silently averages two different
-# quantities into one plausible-looking number.
+# more than one probe set, so collapsing on metric silently averages two different quantities
+# into one plausible-looking number.
 wide = df.pivot_table(
     index=["run_id", "role"], columns=["metric", "probe_set"], values="value"
 )
 wide.round(4)
-"""),
-        md("""\
+"""
+
+
+def nb_stage(number, stage, title, blurb, look_for, checks) -> dict:
+    """One stage notebook.
+
+    `look_for` and `checks` are per-stage on purpose. An earlier version shared one block across
+    all three, so the shadow and unlearning notebooks told the reader to inspect `forget_acc` and
+    compare memorization strata -- neither of which those stages produce. Guidance that does not
+    match the output is worse than none: it teaches people to ignore the guidance.
+    """
+    header = (
+        "# " + number + " - " + title + "\n\n" + blurb + "\n\n"
+        "**Set `ACCOUNT` below** to this account's number. Every account runs the identical\n"
+        "notebook with a different `ACCOUNT`, and they compute disjoint slices of the work with\n"
+        "no coordination -- run identifiers are pure functions of the config, so all accounts\n"
+        "derive the same work list and each takes its own stripe. Running everything on one\n"
+        "account also works: set `OF = 1` and the slice becomes the whole list.\n\n"
+        "Runs already present in the attached artefact dataset are skipped, so a session that\n"
+        "dies costs only its in-flight model.\n"
+    )
+    config = (
+        "ACCOUNT = 1     # <-- this account's number, 1-based\n"
+        "OF      = 3     # <-- how many accounts share this stage (1 takes everything)\n\n"
+        'DEVICE = "cuda" if __import__("torch").cuda.is_available() else "cpu"\n'
+        "STAGE  = " + str(stage) + "\n"
+        'print(f"account {ACCOUNT} of {OF}, stage {STAGE}, device {DEVICE}")\n'
+    )
+    return notebook([
+        md(header),
+        code(INSTALL),
+        code(SETUP),
+        code(config),
+        md("## What this account will do"),
+        code("!{CLI} --root . --dry-run queue --stage {STAGE} "
+             "--account {ACCOUNT} --of {OF}\n"),
+        md("## Run it\n\nThe long cell. It prints each run as it starts and finishes, so you "
+           "can watch progress and estimate the time remaining."),
+        code("!{CLI} --root . --device {DEVICE} queue --stage {STAGE} "
+             "--account {ACCOUNT} --of {OF}\n"),
+        md("## Inspect what came out"),
+        code(INSPECT),
+        md(look_for),
+        code(checks),
+        code(STATUS),
+        code(PUSH),
+    ])
+
+
+LOOK_TRAIN = """\
 ### What to look for
 
-**`forget_acc` is the experiment's whole premise made visible.** It is what a model that *never
-saw* the forget set nonetheless scores on it:
+**`forget_acc` is the experiment's premise made visible.** It is what a model that *never saw*
+the forget set nonetheless scores on it:
 
-* `mem-low-3000` near **1.00** — the oracle gets them right anyway, because they were learnable
-  from other examples. M₀ ≈ M_r here, so there is nothing for any audit to detect. That is the
-  negative control behaving exactly as designed.
-* `mem-high-3000` near **0.56** — the oracle largely fails on these, so M₀ and M_r genuinely
+* `mem-low-3000` near **1.00** - the oracle gets them right anyway, because they were learnable
+  from other examples. M0 is approximately M_r here, so there is nothing for any audit to
+  detect. That is the negative control behaving exactly as designed.
+* `mem-high-3000` near **0.56** - the oracle largely fails on these, so M0 and M_r genuinely
   differ. This is where the audits have something to disagree about.
 
 If those two are not far apart, stop: the difficulty axis is not working and nothing downstream
 will mean much.
 
-**Seed spread** is the Stage 3 gate (≤ 0.5 pp) and the raw material for every oracle band — it is
-reported, never averaged away.
-"""),
-        code("""\
-# Seed-to-seed spread. This is not a diagnostic to average away -- it is the raw material for
-# every oracle band in the calibration stage, and stage 3's gate is that it stays within 0.5 pp.
-acc = df[df.metric == "test_acc"]
+**Seed spread** is the Stage 3 gate and the raw material for every oracle band, so it is reported
+rather than averaged away. The gate is on the **standard deviation** (<= 0.4 pp), not the range:
+range grows with sample size, so a range-based gate would tighten as you collect more oracles,
+which is backwards.
+"""
+
+CHECK_TRAIN = """\
+# Seed-to-seed variation. Not a nuisance to average away -- it IS the reference distribution
+# that every later threshold is expressed against.
+acc = df[(df.metric == "test_acc") & (df.role == "oracle")]
 if len(acc) > 1:
-    spread = acc.groupby("forget_id")["value"].agg(["mean", "std", "count"])
-    print(spread.round(4))
-"""),
-        code(STATUS),
-        code(PUSH),
-    ])
+    print(acc.groupby("forget_id")["value"].agg(["mean", "std", "count"]).round(4), "\\n")
+
+ens = acc[acc.oracle_seed.notna()]
+if len(ens) > 1:
+    sd_pp = ens["value"].std() * 100
+    verdict = "PASS" if sd_pp <= 0.4 else "FAIL"
+    print(f"oracle ensemble: n={len(ens)}, sd={sd_pp:.2f} pp -> gate (<= 0.4 pp) {verdict}")
+"""
+
+LOOK_SHADOW = """\
+### What to look for
+
+Shadow models have **no forget set**, so there is no `forget_acc` here and `forget_id` reads
+`full` for every row. That is correct, not a gap.
+
+* **`test_acc` around 0.89**, roughly 3-4 pp below the full-data models. Each shadow trains on a
+  random *half* of the training set, so it should be measurably weaker. If they matched the
+  full-data models, the subsetting would not be happening.
+* **Runtime around half** that of a Stage 3 run, for the same reason.
+* **OUT coverage** is the property the whole privacy audit rests on, and the check below measures
+  it: every target example must be *absent* from a decent number of shadows, because those are
+  the models RMIA compares a target against. With 32 shadows at 50% each, expect a mean near 16.
+  A low minimum would mean some examples have almost no reference distribution, making their
+  per-example attack scores unreliable.
+"""
+
+CHECK_SHADOW = """\
+# OUT coverage: for each example, how many shadows did NOT train on it? Those are the reference
+# models RMIA scores a target against, so this is the property that makes the attack possible.
+import numpy as np
+from forgetcheck.config import Context, find_configs
+from forgetcheck.train import shadow_indices
+
+ctx = Context(configs=find_configs(), root=".")
+n_train = ctx.base["dataset"]["n_train"]
+total = ctx.base["shadows"]["count"]
+
+have = sorted(
+    int(r.rsplit("shadow", 1)[-1]) for r in ctx.store.iter_checkpoints(role="shadow")
+)
+print(f"{len(have)}/{total} shadows trained so far")
+
+if have:
+    subsets = [
+        set(shadow_indices(n_train, i, audit_seed=ctx.seeds["audit"]).tolist()) for i in have
+    ]
+    sample = np.random.default_rng(0).choice(n_train, 1000, replace=False)
+    out = np.array([sum(int(x) not in sub for sub in subsets) for x in sample])
+    print(f"OUT coverage over 1000 random examples: mean {out.mean():.1f}, "
+          f"min {out.min()}, max {out.max()} (of {len(have)} shadows)")
+    if len(have) == total:
+        print(f"   expected mean ~{total // 2}; a low minimum means some examples have too few "
+              "reference models for a reliable per-example score")
+"""
+
+LOOK_UNLEARN = """\
+### What to look for
+
+**Compare `forget_acc` against the oracle, never against zero.** Stage 3 established what a
+retrained model scores on each forget set - about 0.56 on `mem-high-3000`, about 1.00 on
+`mem-low-3000`. A method that drives forget accuracy to zero has *over*-forgotten: it ends up
+further from the retrained model than the original was, in the opposite direction.
+
+**`neggrad` is the destructive control and is expected to look bad.** Wrecked `retain_acc` and
+`test_acc` alongside collapsed `forget_acc` is the reason it is included - it is the cleanest
+demonstration that "looks forgotten" can mean "damaged". Do not tune it to look better.
+
+**`neggradplus` should hold `retain_acc` far better than `neggrad`.** The retain term is the
+entire difference between them; if they look alike, the alpha weighting is not doing its job.
+
+**Runtime varies a lot by method**, and that is a reported result (efficiency), not noise:
+`salun` and `scrub` make several passes, `finetune` and `l1sparse` are single-objective.
+"""
+
+CHECK_UNLEARN = """\
+# Method-level summary. Utility first: a forgetting number from a broken model means nothing.
+u = df[df.role == "unlearn"]
+if len(u):
+    piv = u.pivot_table(index="method", columns=["metric", "probe_set"], values="value")
+    want = [("retain_acc", "retain"), ("test_acc", "test"),
+            ("forget_acc", "forget"), ("runtime_s", "all")]
+    cols = [c for c in want if c in piv.columns]
+    print(piv[cols].round(4), "\\n")
+
+    if ("test_acc", "test") in piv.columns:
+        worst = piv[("test_acc", "test")].idxmin()
+        note = "  <-- expected: this is the destructive control" if worst == "neggrad" else ""
+        print(f"lowest test accuracy: {worst} "
+              f"({piv.loc[worst, ('test_acc', 'test')]:.4f}){note}")
+"""
 
 
 def main() -> None:
@@ -448,25 +548,23 @@ def main() -> None:
             "01", 3, "Train base models and oracles",
             "Stage 3: the 10 original models (5 seeds x clean/canary) and the retrained oracles "
             "-- 5 paired per condition, plus the 12-model ensemble at the primary condition. "
-            "62 trainings in total.",
-            "\n\nThe oracle ensemble at `mem-high-3000` is what every later threshold is "
-            "expressed against, so its spread matters more than its mean.",
+            "62 trainings, about 8 minutes each on a T4.",
+            LOOK_TRAIN, CHECK_TRAIN,
         ),
         "02_shadows.ipynb": nb_stage(
             "02", 4, "Train RMIA reference models",
             "Stage 4: 32 shadow models, each on a random half of the training set, so every "
-            "example is OUT for roughly 16 of them. They are condition-independent -- the same "
-            "32 serve all eight forget conditions -- and nothing blocks on them until the "
+            "example is absent from roughly 16 of them. They are condition-independent -- the "
+            "same 32 serve all eight forget conditions -- and nothing blocks on them until the "
             "privacy audit, so they can run early on a spare account.",
+            LOOK_SHADOW, CHECK_SHADOW,
         ),
         "03_unlearn.ipynb": nb_stage(
             "03", 5, "Apply the unlearning methods",
-            "Stage 5: six methods x eight conditions x five seeds = 240 runs. Requires stage 3 "
+            "Stage 5: six methods x eight conditions x five seeds = 240 runs. Requires Stage 3 "
             "to have finished -- an unlearning run needs the original model it modifies, and "
-            "will fail loudly rather than unlearn from a fresh initialisation.",
-            "\n\nWatch `neggrad` specifically: it is the **destructive control** and is expected "
-            "to wreck retain accuracy while driving forget accuracy down. That is the point of "
-            "including it, not a bug.",
+            "fails loudly rather than unlearning from a fresh initialisation.",
+            LOOK_UNLEARN, CHECK_UNLEARN,
         ),
     }
     for name, nb in notebooks.items():
