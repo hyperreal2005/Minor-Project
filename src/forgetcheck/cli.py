@@ -22,7 +22,7 @@ from typing import Callable, Iterable, Sequence
 
 from .config import Context, find_configs
 from .data.forget_sets import spec_by_id
-from .registry import run_id
+from .registry import parse_run_id, run_id
 from .train import base_task, oracle_task, run_task, shadow_task
 from .unlearn import CORE_METHODS, base_run_id_for, method_names, run_unlearn
 
@@ -174,6 +174,35 @@ def shard(items: Sequence[WorkItem], *, account: int, of: int) -> list[WorkItem]
     return ordered[account - 1 :: of]
 
 
+def filter_items(
+    items: Sequence[WorkItem],
+    *,
+    forget: str | None = None,
+    methods: Sequence[str] | None = None,
+    seeds: Sequence[int] | None = None,
+) -> list[WorkItem]:
+    """Narrow a stage's work list.
+
+    Filtering happens on the *parsed run id*, so one implementation covers every stage and
+    cannot drift from how the items were built.
+
+    This is what makes a pilot one command instead of six: a single condition, a single seed,
+    all six methods, before committing hours to the full matrix. It is equally the way to re-run
+    one method after changing it, without touching the 200-odd runs that are already correct.
+    """
+    out = []
+    for it in items:
+        key = parse_run_id(it.run_id)
+        if forget is not None and key.forget != forget:
+            continue
+        if methods is not None and key.method not in methods:
+            continue
+        if seeds is not None and key.seed not in seeds:
+            continue
+        out.append(it)
+    return out
+
+
 def plan_stage(ctx: Context, stage: int) -> list[WorkItem]:
     try:
         _label, builder = STAGES[stage]
@@ -236,12 +265,26 @@ def _execute(items: Iterable[WorkItem], *, dry_run: bool, store) -> int:
 
 
 def cmd_queue(args) -> int:
-    """Run this account's share of a stage."""
+    """Run this account's share of a stage, optionally narrowed to a subset."""
     ctx = _ctx(args)
-    items = shard(plan_stage(ctx, args.stage), account=args.account, of=args.of)
+    items = plan_stage(ctx, args.stage)
+    total = len(items)
+
+    methods = args.methods.split(",") if args.methods else None
+    seeds = [int(x) for x in args.seeds.split(",")] if args.seeds else None
+    if args.forget or methods or seeds:
+        items = filter_items(items, forget=args.forget, methods=methods, seeds=seeds)
+        if not items:
+            raise SystemExit(
+                f"no stage-{args.stage} items match forget={args.forget!r} "
+                f"methods={methods} seeds={seeds}"
+            )
+
+    items = shard(items, account=args.account, of=args.of)
     label = STAGES[args.stage][0]
+    narrowed = f" (filtered from {total})" if len(items) != total else ""
     print(
-        f"stage {args.stage} ({label}): {len(items)} items "
+        f"stage {args.stage} ({label}): {len(items)} items{narrowed} "
         f"for account {args.account} of {args.of}\n"
     )
     return _execute(items, dry_run=args.dry_run, store=ctx.store)
@@ -345,6 +388,11 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--stage", type=int, required=True, choices=sorted(STAGES))
     q.add_argument("--account", type=int, default=1, help="1-based account index")
     q.add_argument("--of", type=int, default=1, help="how many accounts share this stage")
+    q.add_argument("--forget", default=None,
+                   help="restrict to one forget condition, e.g. mem-high-3000")
+    q.add_argument("--methods", default=None,
+                   help="comma-separated methods, e.g. finetune,salun")
+    q.add_argument("--seeds", default=None, help="comma-separated seeds, e.g. 0 or 0,1")
     q.set_defaults(func=cmd_queue)
 
     b = sub.add_parser("train-base", help="train one original model")

@@ -17,6 +17,7 @@ import pytest
 import yaml
 
 from forgetcheck.cli import STAGES, WorkItem, build_parser, plan_stage, shard
+from forgetcheck.registry import parse_run_id
 from forgetcheck.config import Context, find_configs
 
 REPO = Path(__file__).resolve().parents[1]
@@ -289,3 +290,58 @@ class TestExecuteReporting:
         _execute(self._items(5, fail_at={2}), dry_run=False, store=self._store(present))
         out = capsys.readouterr().out
         assert "ran 3, skipped 1 already present, 1 failed" in out  # 3 + 1 + 1 == 5
+
+
+@pytest.mark.requires_data
+class TestFiltering:
+    """Narrowing a stage's work list.
+
+    This is what makes a pilot one command instead of six, and the way to re-run a single method
+    after changing it without touching the runs that are already correct.
+    """
+
+    def test_pilot_selects_one_condition_one_seed_all_methods(self, ctx):
+        from forgetcheck.cli import filter_items
+        from forgetcheck.unlearn import CORE_METHODS
+
+        got = filter_items(plan_stage(ctx, 5), forget="mem-high-3000", seeds=[0])
+        assert len(got) == len(CORE_METHODS) == 6
+        keys = [parse_run_id(i.run_id) for i in got]
+        assert {k.method for k in keys} == set(CORE_METHODS)
+        assert {k.forget for k in keys} == {"mem-high-3000"}
+        assert {k.seed for k in keys} == {0}
+
+    def test_method_filter(self, ctx):
+        from forgetcheck.cli import filter_items
+
+        got = filter_items(plan_stage(ctx, 5), methods=["salun"])
+        assert len(got) == 8 * 5  # conditions x seeds
+        assert all(parse_run_id(i.run_id).method == "salun" for i in got)
+
+    def test_filters_compose(self, ctx):
+        from forgetcheck.cli import filter_items
+
+        got = filter_items(
+            plan_stage(ctx, 5), forget="rand-500", methods=["salun", "scrub"], seeds=[0, 1]
+        )
+        assert len(got) == 2 * 2
+
+    def test_no_filter_is_identity(self, ctx):
+        from forgetcheck.cli import filter_items
+
+        items = plan_stage(ctx, 5)
+        assert len(filter_items(items)) == len(items)
+
+    def test_works_on_stages_without_methods(self, ctx):
+        # Filtering parses the run id, so one implementation covers every stage.
+        from forgetcheck.cli import filter_items
+
+        got = filter_items(plan_stage(ctx, 3), forget="mem-low-3000")
+        assert got and all(parse_run_id(i.run_id).forget == "mem-low-3000" for i in got)
+
+    def test_empty_result_fails_loudly(self):
+        # Silently running nothing would look like success; a typo must not do that.
+        from forgetcheck.cli import main
+
+        with pytest.raises(SystemExit, match="no stage-5 items match"):
+            main(["--dry-run", "queue", "--stage", "5", "--methods", "typo"])
