@@ -100,10 +100,19 @@ class NegGrad(Unlearner):
 
     The destructive control. Reported as such, never as a competitive method: it is expected to
     destroy retained utility, and that is the point.
+
+    Deliberately *not* given the bounded ascent term that NegGrad+ carries. The cap exists there to
+    stop a method we want to be usable from collapsing; here collapse is the behaviour under
+    study, and capping it would erase the very contrast the control provides.
     """
 
     name = "neggrad"
-    defaults = {"epochs": 1, "lr": 0.001, "momentum": 0.9, "weight_decay": 0.0}
+    # Pilot at mem-high-3000 with the original epochs=1, lr=0.001 gave forget_acc 0.9723 --
+    # *higher* than fine-tune's 0.9460, and retain_acc untouched at 0.9973. One epoch over 3000
+    # examples is 12 steps at lr 0.001: the control was not controlling anything, and a reader
+    # would have concluded that gradient ascent is harmless. Raised until it visibly destroys,
+    # which is the entire point of including it.
+    defaults = {"epochs": 5, "lr": 0.01, "momentum": 0.9, "weight_decay": 0.0}
 
     def unlearn(self, model: nn.Module, ctx: UnlearnContext) -> nn.Module:
         set_determinism(ctx.seed)
@@ -131,7 +140,23 @@ class NegGradPlus(Unlearner):
     consistent top performer on CIFAR-10 / ResNet-18. The retain term is what stops the ascent
     from collapsing the model, which is the whole difference from plain NegGrad.
 
-    Loss = alpha * CE(retain) - (1 - alpha) * CE(forget)
+    Published loss = alpha * CE(retain) - (1 - alpha) * CE(forget)
+
+    **Deviation: the ascent term is floored.** The published objective is unbounded below, and in
+    the mem-high-3000 pilot it ran away exactly as that implies -- ~920 steps at lr 0.01 drove
+    forget accuracy to 0.136 but took retain down to 0.336 and test to 0.330. A run that collapses
+    the model is uninformative about every audit downstream of it, and hand-tuning the learning
+    rate per condition is not available to us across 240 runs. So the forget term is replaced by
+
+        max(0, forget_cap - CE(forget))
+
+    which has an identical gradient to ``-CE(forget)`` while the model still knows the forget set,
+    and zero gradient once it no longer does. ``forget_cap`` defaults to ln(10) = 2.303, the
+    cross-entropy of a uniform prediction over CIFAR-10's ten classes: the point past which the
+    model is no better than chance on the forget set and further ascent only manufactures
+    confident *wrong* answers. That is untraining rather than unlearning -- the distinction this
+    project is built on -- so stopping there is the substantive choice, not just a numerical
+    guard. Set ``forget_cap`` to ``inf`` to recover the published loss exactly.
     """
 
     name = "neggradplus"
@@ -141,6 +166,7 @@ class NegGradPlus(Unlearner):
         "alpha": 0.95,
         "momentum": 0.9,
         "weight_decay": 5e-4,
+        "forget_cap": math.log(10.0),
     }
 
     def unlearn(self, model: nn.Module, ctx: UnlearnContext) -> nn.Module:
@@ -149,6 +175,7 @@ class NegGradPlus(Unlearner):
         opt = _sgd(m, self.cfg)
         crit = nn.CrossEntropyLoss()
         alpha = self.cfg["alpha"]
+        cap = float(self.cfg["forget_cap"])
         forget_iter = _cycle(ctx.forget_loader)
 
         for _ in range(self.cfg["epochs"]):
@@ -158,7 +185,10 @@ class NegGradPlus(Unlearner):
                 xf, yf = xf.to(ctx.device), yf.to(ctx.device)
 
                 opt.zero_grad(set_to_none=True)
-                loss = alpha * crit(m(xr), yr) - (1.0 - alpha) * crit(m(xf), yf)
+                # clamp(cap - L, min=0) descends with dL/d(loss) = -1 below the cap -- the same
+                # ascent the published loss performs -- and flattens to 0 above it.
+                ascent = torch.clamp(cap - crit(m(xf), yf), min=0.0)
+                loss = alpha * crit(m(xr), yr) + (1.0 - alpha) * ascent
                 loss.backward()
                 opt.step()
         return m

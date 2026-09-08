@@ -1,6 +1,6 @@
 # ForgetCheck — implementation status
 
-**Updated:** 29 August 2026
+**Updated:** 8 September 2026
 **Tracks:** [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) stages and gates
 
 Read this first when resuming work. It records what exists, what its gate says, and what is
@@ -15,14 +15,20 @@ genuinely unresolved — as opposed to merely unwritten.
 | 0 — Environment & data | A | **DONE** | ✅ Passes — data hash pinned, loader guard verified |
 | 1 — Registry | A | **DONE** | ✅ Passes — see below |
 | 2 — Forget sets | A | **DONE** | ✅ **Fully passes** — verified against the real RUM scores |
-| 3 — Base models & oracles | A | **CODE DONE** | Shared loop + tasks + CLI; awaits GPU execution |
-| 4 — Unlearning methods | A, B | **CODE DONE** | Six methods + SSD behind one interface |
-| 5 — Full-pipeline pilot | all | not started | — |
+| 3 — Base models & oracles | A | **DONE, EXECUTED** | ✅ 62/62 trained on Kaggle; seed-SD gate passes |
+| 4 — Unlearning methods | A, B | **DONE** | Six methods + SSD behind one interface |
+| 5 — Full-pipeline pilot | all | **PILOT RUN** | ⚠️ 6/6 ran; **caught two broken configs** — see below |
 | 6 — Audits | B, C | not started | — |
 | 7 — Calibration & validity | D | not started | — |
 | 8 — Analysis | D | not started | — |
 
-**Test suite: 270 passing** (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
+> **Two different stage numberings are in play.** The table above is the *plan's build*
+> stages. `forgetcheck queue --stage N` uses *queue* stages, which are not the same: queue 3 =
+> base models + oracles, queue 4 = RMIA **shadow models**, queue 5 = the 240 unlearning runs.
+> Plan stage 4 is "write the unlearning methods"; queue stage 4 is shadows. Read the CLI's
+> `status` output for the queue meaning.
+
+**Test suite: 280 passing** (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
 
 ---
 
@@ -310,6 +316,92 @@ What this changes, and what it does not:
   of it from strongly-memorized examples. They will be less discriminative than the high stratum,
   but not empty. Do not write them up as though nothing was detectable there.
 
+## Stage 5 pilot — 6 runs, and it did its job (8 Sep 2026)
+
+Six methods at `mem-high-3000`, seed 0, against the oracle for the same condition
+(forget_acc 0.5575, test_acc 0.9228). *G* is the normalized oracle gap on forget accuracy:
+`|m(Mu) - m̄(Mr)| / (|m(M0) - m̄(Mr)| + ε)` — 0 is oracle-identical, 1 is no better than the
+original model.
+
+| method | forget_acc | *G* | test_acc | test vs oracle |
+|---|---|---|---|---|
+| finetune | 0.9460 | 0.878 | 0.9306 | +0.0078 |
+| l1sparse | 0.8840 | 0.738 | 0.9204 | −0.0024 |
+| neggrad | 0.9723 | 0.937 | 0.9260 | +0.0032 |
+| neggradplus | 0.1360 | 0.953 | 0.3303 | **−0.5925** |
+| salun | 0.6020 | **0.101** | 0.8748 | −0.0480 |
+| scrub | 0.8970 | 0.767 | 0.9307 | +0.0079 |
+
+**This is the outcome the pilot stage exists to produce.** Two of six methods were misconfigured
+in ways that would have been invisible in aggregate and would have cost 5–6 h of Stage 5 compute
+plus every audit built on top of those checkpoints. Both are now fixed, with regression tests.
+
+### Bug 1 — the destructive control was not destructive
+
+`neggrad` came back at forget_acc 0.9723, *higher* than fine-tune's 0.9460, with retain_acc
+untouched at 0.9973 and a 6.3 s runtime. The defaults were `epochs=1, lr=0.001`: over 3000 forget
+examples at batch 256 that is **twelve** optimizer steps at a thousandth learning rate.
+
+Why it mattered more than a bad number: NegGrad is in the method set as a *labelled control*, the
+clean demonstration that "looks forgotten" can mean "damaged" — the failure Audit Layer 1 exists
+to catch. A no-op control does not merely score badly, it removes that contrast from the paper
+and invites the reader to conclude gradient ascent is harmless.
+
+Raised to `epochs=5, lr=0.01`. The calibration is taken from the pilot's own arithmetic rather
+than guessed: diverged `neggradplus` spent ≈920 steps × 0.01 lr × 0.05 ascent weight ≈ 0.46
+lr-steps of ascent and collapsed the model; the new `neggrad` spends 60 × 0.01 × 1.0 = 0.60 with
+no retain counterweight at all. Comparable budget, no brake — which is what a destructive control
+should be. Confirm on the pilot re-run, not on the toy fixture.
+
+### Bug 2 — NegGrad+ diverged, because the published loss is unbounded below
+
+`neggradplus` drove forget_acc to 0.1360 but took retain to 0.3363 and test to 0.3303. That is
+not aggressive unlearning, it is a collapsed model, and every audit downstream of that checkpoint
+would have been measuring rubble.
+
+The cause is structural, not a hyperparameter accident. The published objective is
+
+```
+alpha * CE(retain) - (1 - alpha) * CE(forget)
+```
+
+whose second term has no lower bound: ascent keeps paying off forever, and ≈920 steps at lr 0.01
+is enough for it to win against the retain term even at alpha 0.95. Lowering the learning rate
+would paper over it for this one condition while leaving the next of the eight free to diverge —
+and hand-tuning per condition is not available across 240 runs.
+
+**Deviation, deliberate.** The forget term is replaced by `max(0, forget_cap - CE(forget))`,
+which has an *identical* gradient to `-CE(forget)` while the model still knows the forget set and
+zero gradient once it does not. `forget_cap` defaults to ln(10) = 2.3026 — the cross-entropy of a
+uniform prediction over ten classes.
+
+That constant is the substantive part, not a numerical guard. Past chance level the model is not
+becoming more ignorant of the forget set, it is becoming confidently *wrong* about it — which is
+untraining, not unlearning, the exact distinction (Triantafillou et al.) this project is built
+on. Stopping at chance is therefore the principled bound. `forget_cap=inf` recovers the published
+loss exactly, so the deviation is reversible and must be stated in the write-up.
+
+`neggrad` is deliberately **not** capped: there, collapse is the behaviour under study.
+
+### Not a bug — SalUn's asymmetry, flagged and left alone
+
+SalUn is far and away the best on the forget axis (*G* = 0.101 against 0.74–0.95 for everything
+else) and pays 4.8 pp of test accuracy for it — the only method other than diverged NegGrad+ to
+lose meaningful utility. The previously-flagged 15× retain-exposure gap is the likely cause.
+
+**Left unchanged on purpose.** Giving SalUn full retain epochs would probably buy back the test
+accuracy by trading away the forgetting that makes it interesting, and "which method sits where
+on that trade-off" is a result, not a bug to tune out. Revisit only if the full Stage 5 shows the
+utility loss is much worse at other conditions.
+
+### Reading the *G* column
+
+Five of six methods land at *G* ≥ 0.74 — closer to the original model than to the oracle on
+forget accuracy. That is consistent with the literature and is exactly the phenomenon the project
+is auditing; it is not evidence of a further bug. Do not "fix" it.
+
+---
+
 ## Open questions
 
 ### 1. RUM strata — RESOLVED (27 Aug 2026)
@@ -375,16 +467,22 @@ this — do not pool size conditions as if they were separate samples.
 
 ## Next actions
 
-1. **Push the repo**, then set `REPO` and `COMMIT` in the notebooks. They install the package at
-   a pinned commit, so provenance depends on it. A pre-push fallback (install from an uploaded
-   Kaggle Dataset) is noted in each notebook.
-2. **Run `00_verify_setup.ipynb`** on one Kaggle account. It confirms the data and memorization
-   hashes match this machine's, which is the precondition for any cross-account comparison.
-3. **Stage 3 on Kaggle**: `forgetcheck queue --stage 3 --account K --of N`. 62 trainings.
-4. **Stage 4** (shadows, 32) can run in parallel on a spare account — nothing blocks on them
-   until the privacy audit.
-5. **Stage 5** (240 unlearning runs) after stage 3 completes.
-6. Then **Stage 6**: the audit modules, which are the next thing to write.
+1. **Push to `main`.** The notebooks install from `COMMIT = "main"`, so pushing is how the two
+   method fixes reach Kaggle. Nothing else needs re-uploading.
+2. **Re-run the pilot, same one command**, before spending real compute:
+   `forgetcheck queue --stage 5 --forget mem-high-3000 --seeds 0`
+   Read three things off it: `neggrad` forget_acc must fall well below the oracle's 0.5575 *and*
+   visibly damage retain_acc (if retain stays ~0.99 it is still a no-op); `neggradplus` retain and
+   test must come back to ~0.9 (if they are still ~0.33 the cap is not binding); everything else
+   should be within noise of the table above.
+3. **Full Stage 5** — 240 runs, ~5–6 h sharded across accounts — only once 2 reads clean.
+4. Then **Stage 6: the audit modules** (behavioral, privacy_population, privacy_rmia,
+   representation, relearning). This is the actual contribution and none of it is written yet.
+5. Stage 7 calibration, Stage 8 analysis.
+
+Still open from the review: the ICLR 2026 OpenReview submission `9IzfArmoHq` has never been read
+(bot check blocks fetching). It is a possible further novelty threat and someone should open it
+in a browser.
 
 Environment notes: Python 3.13.5, torch 2.13.0+cpu locally. pandas needed a
 `--force-reinstall --no-cache-dir` on this machine — its first install left broken C extensions.

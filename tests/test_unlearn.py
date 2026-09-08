@@ -131,6 +131,60 @@ class TestSemantics:
         plus = get_unlearner("neggradplus", epochs=3, lr=0.05, alpha=0.95).unlearn(model, ctx)
         assert retain_loss(plus) < retain_loss(plain)
 
+    def test_neggrad_shipped_defaults_actually_destroy(self, ctx):
+        # Regression on the mem-high-3000 pilot. The original defaults (epochs=1, lr=0.001) were
+        # 12 steps over 3000 examples and left forget accuracy at 0.9723 -- *above* fine-tune's
+        # 0.9460. A destructive control that does not destroy still occupies a rank slot and
+        # invites the reader to conclude gradient ascent is harmless.
+        #
+        # Asserted against the *shipped* defaults with no overrides, because the defaults are
+        # what the 240 production runs use, and overriding them here is what hid the bug.
+        model = tiny_model()
+        crit = nn.CrossEntropyLoss()
+
+        def forget_loss(m):
+            with torch.no_grad():
+                return float(sum(crit(m(x), y) * len(y) for x, y, _ in ctx.forget_loader))
+
+        base = forget_loss(model)
+        weak = forget_loss(get_unlearner("neggrad", epochs=1, lr=0.001).unlearn(model, ctx))
+        shipped = forget_loss(get_unlearner("neggrad").unlearn(model, ctx))
+        # The tiny MLP cannot reproduce ResNet-18 magnitudes, so this compares the two configs
+        # rather than testing an absolute threshold: the shipped one must ascend by an order of
+        # magnitude more than the config that failed the pilot.
+        assert shipped - base > 10 * (weak - base) > 0
+
+    def test_neggradplus_ascent_is_floored_at_the_cap(self, ctx):
+        # Below the cap the forget term must behave exactly like the published -CE(forget);
+        # at or above it, it must contribute no gradient at all. A fresh model already sits at
+        # chance (CE ~ 2.31), so a cap of 1.0 is already exceeded and must be fully inert --
+        # indistinguishable from switching the term off entirely.
+        model = tiny_model()
+
+        def run(**kw):
+            return get_unlearner("neggradplus", epochs=2, lr=0.05, **kw).unlearn(
+                model, ctx
+            ).state_dict()
+
+        off, exceeded = run(forget_cap=0.0), run(forget_cap=1.0)
+        for k in off:
+            assert torch.equal(off[k], exceeded[k]), f"cap not gating the forget term at {k}"
+
+    def test_neggradplus_recovers_the_published_loss_at_an_infinite_cap(self, ctx):
+        # The cap is a documented deviation, so the published objective has to remain reachable
+        # -- otherwise the comparison we report is against a method nobody else ran. This also
+        # proves the clamp is load-bearing rather than decorative: with it lifted, the same run
+        # lands somewhere else.
+        model = tiny_model()
+
+        def run(cap):
+            return get_unlearner("neggradplus", epochs=2, lr=0.05, forget_cap=cap).unlearn(
+                model, ctx
+            ).state_dict()
+
+        floored, published = run(0.0), run(float("inf"))
+        assert any(not torch.equal(floored[k], published[k]) for k in floored)
+
     def test_salun_mask_is_sparse_and_respects_the_ratio(self, ctx):
         u = get_unlearner("salun", sparsity=0.3)
         mask = u._saliency_mask(tiny_model(), ctx)
