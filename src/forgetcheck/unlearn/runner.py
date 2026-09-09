@@ -66,8 +66,24 @@ def run_unlearn(
             unlearning from a fresh initialisation.
     """
     rid = run_id(role="unlearn", forget=spec.forget_id, method=method, seed=seed)
+
+    # Resolve hyperparameters up front so a stale checkpoint can be recognised before any work
+    # happens. The run_id grammar deliberately carries no hyperparameters -- it names *what* was
+    # unlearned, not how -- which means a config change reuses the same id. Without this check,
+    # re-running after a method fix would hit `has_checkpoint` and silently skip, leaving the old
+    # broken weights in place while the console reported success. That is precisely how the
+    # Stage 5 neggrad and salun defects would have survived their own fix.
+    hp = config_sha({"method": method, **get_unlearner(method, **(hparams or {})).cfg})
     if skip_existing and store.has_checkpoint(rid):
-        return None
+        stored = store.load_meta(rid).hparams_sha
+        if stored == hp:
+            return None
+        # Fall through and recompute: the stored run used different hyperparameters. Say so
+        # loudly -- a silent overwrite is as bad as a silent skip.
+        print(
+            f"  {rid}: stored hyperparameters {stored or '(none)'} != current {hp}; recomputing",
+            flush=True,
+        )
 
     base_rid = base_run_id_for(spec, seed)
     if not store.has_checkpoint(base_rid):
@@ -115,8 +131,6 @@ def run_unlearn(
     t0 = time.perf_counter()
     unlearned = unlearner.unlearn(model, ctx)
     elapsed = time.perf_counter() - t0
-
-    hp = config_sha({"method": method, **unlearner.cfg})
 
     evals = {
         "test": make_loader(bundle, train=False, split="test", batch_size=512,

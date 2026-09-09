@@ -17,7 +17,7 @@ genuinely unresolved — as opposed to merely unwritten.
 | 2 — Forget sets | A | **DONE** | ✅ **Fully passes** — verified against the real RUM scores |
 | 3 — Base models & oracles | A | **DONE, EXECUTED** | ✅ 62/62 trained on Kaggle; seed-SD gate passes |
 | 4 — Unlearning methods | A, B | **DONE** | Six methods + SSD behind one interface |
-| 5 — Full-pipeline pilot | all | **PILOT RUN** | ⚠️ 6/6 ran; **caught two broken configs** — see below |
+| 5 — Full-pipeline pilot | all | **PASSED** | ✅ Re-run clean after two method fixes; full 240 cleared to launch |
 | 6 — Audits | B, C | not started | — |
 | 7 — Calibration & validity | D | not started | — |
 | 8 — Analysis | D | not started | — |
@@ -28,7 +28,7 @@ genuinely unresolved — as opposed to merely unwritten.
 > Plan stage 4 is "write the unlearning methods"; queue stage 4 is shadows. Read the CLI's
 > `status` output for the queue meaning.
 
-**Test suite: 280 passing** (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
+**Test suite: 284 passing** (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
 
 ---
 
@@ -394,11 +394,215 @@ accuracy by trading away the forgetting that makes it interesting, and "which me
 on that trade-off" is a result, not a bug to tune out. Revisit only if the full Stage 5 shows the
 utility loss is much worse at other conditions.
 
-### Reading the *G* column
+### Pilot re-run, 8 Sep 2026 — both fixes confirmed
 
-Five of six methods land at *G* ≥ 0.74 — closer to the original model than to the oracle on
-forget accuracy. That is consistent with the literature and is exactly the phenomenon the project
-is auditing; it is not evidence of a further bug. Do not "fix" it.
+Oracle at `mem-high-3000`: forget_acc 0.5575, test_acc 0.9228. Base model forget_acc ≈ 1.000
+(inferred from pilot 1's *G* values, and expected — these are the most-memorized examples).
+
+| method | forget_acc | *G* | retain_acc | test_acc | runtime |
+|---|---|---|---|---|---|
+| finetune | 0.9477 | 0.882 | 0.9978 | 0.9304 | 171 s |
+| l1sparse | 0.8930 | 0.758 | 0.9922 | 0.9229 | 173 s |
+| neggrad | 0.0517 | 1.143 | **0.1031** | **0.1000** | 15 s |
+| neggradplus | 0.7340 | 0.399 | 0.9928 | 0.9152 | 337 s |
+| salun | 0.6057 | **0.109** | 0.9528 | 0.8752 | 29 s |
+| scrub | 0.8967 | 0.767 | 0.9961 | 0.9299 | 231 s |
+
+`neggrad` now collapses the model (macro-F1 0.0187 at accuracy 0.1031 is the signature of a
+*constant* predictor). `neggradplus` recovered: retain 0.9928, test 0.9152, and its *G* improved
+from 0.953 to 0.399 — second best. Its final forget_loss is 1.196, **below** the 2.303 cap, so
+the clamp is not binding at the endpoint; it removed the runaway and let the run settle at an
+equilibrium the uncapped objective could never reach. That is how the guard is supposed to work.
+
+### The control now demonstrates the project's central claim, in one table
+
+Ranking the six by naive "lower forget accuracy is better forgetting" against ranking them by
+oracle gap:
+
+| rank | naive | oracle gap |
+|---|---|---|
+| 1 | **neggrad** | salun |
+| 2 | salun | neggradplus |
+| 3 | neggradplus | l1sparse |
+| 4 | l1sparse | scrub |
+| 5 | scrub | finetune |
+| 6 | finetune | **neggrad** |
+
+The naive metric ranks the destroyed model **first** and the oracle-gap metric ranks it **last**.
+This is the empirical justification for `forget_acc` being registered `closer_to_oracle` rather
+than `lower_better` in `configs/metrics.yaml` — previously a design argument, now a measurement.
+It belongs in the paper.
+
+### Decision — `neggrad` stays at full collapse
+
+The obvious objection is that a constant predictor is *too* destroyed: it is caught by glancing
+at the model, so it does not exercise Audit Layer 1 the way a plausible-looking-but-damaged model
+would. Considered and rejected, for two reasons.
+
+**There is no robust middle setting.** Plain gradient ascent has no equilibrium — forget loss is
+unbounded above and its gradient does not vanish, so any budget large enough to move the model is
+eventually large enough to destroy it. The old defaults (0.004 forget-loss movement) and the new
+ones (0.542) sit either side of a narrow, unstable band whose location would differ across the
+eight conditions. Finding it means per-condition hand-tuning of 40 runs. That NegGrad has no
+stable middle is *why* NegGrad+ exists, and it is worth one sentence in the write-up.
+
+**The collapse is the strongest version of the argument, not a weaker one.** A constant predictor
+should score a *perfect* privacy audit — there is no membership signal to extract from a model
+that has no per-example confidence, so both MIAs should land at AUC ≈ 0.5. A method that
+simultaneously wins the naive forgetting metric and passes every privacy audit while being
+completely useless is the cleanest possible statement of the audit-validity thesis.
+
+**Consequence for Stage 6: the audit modules must handle degenerate models without crashing.**
+Constant outputs will produce undefined AUC, zero-variance activations for CKA, and a relearning
+curve indistinguishable from training from scratch. Each of those is a *result* to report, not a
+bug to route around — but each is also a division by zero waiting to happen. Build the guards in
+from the start, and record the degenerate value rather than skipping the run.
+
+### Runs are not bit-reproducible across sessions — by design, but quantify it
+
+The four methods I did **not** touch came back slightly different from pilot 1 on identical
+config and seed:
+
+| | max |Δ| | mean |Δ| |
+|---|---|---|
+| forget_acc | 0.90 pp (l1sparse) | 0.37 pp |
+| test_acc | 0.25 pp | 0.10 pp |
+
+This is expected: `set_determinism(strict=False)` deliberately leaves `cudnn.benchmark=True`, and
+Kaggle assigns T4 or P100 by availability. The documented rationale — that GPU nondeterminism is
+part of what the oracle ensemble's spread measures — still holds, and oracles carry the same
+noise, so the comparison stays fair.
+
+But 0.90 pp is **larger than the 0.40 pp Stage 3 seed-SD tolerance**, so it is not negligible:
+
+- The 5-seed spread on each (method, condition) is seed variance **plus** hardware
+  nondeterminism. The paper must describe it that way; calling it "seed variance" would be wrong.
+- Method gaps here are 10–40 pp, so nothing about the ranking is at risk. Do not re-tune anything
+  on the strength of a sub-1 pp difference.
+- An individual run cannot be reproduced exactly from the config alone. The stored checkpoints
+  are the reproducible artefact; say so rather than implying rerunability.
+
+Leave `strict=False`. Turning it on costs 20–30% throughput on a stage that is already ~10 h.
+
+### Measured runtimes — replaces the earlier estimate
+
+Pilot 2 total was **956 s for 6 runs**, against my 447 s estimate. The *relative* cost model was
+right (neggradplus/finetune measured 1.97× against 2.0× predicted, from its two forward-backward
+passes per step), but the absolute constant was uniformly ~2.1× low — the 0.078 s/batch derived
+from Stage 3's 460 s training runs understates unlearning, which pays checkpoint load, three
+evaluation passes, and dataloader startup per run.
+
+**Revised Stage 5 estimate: 240 runs × ~159 s ≈ 10.6 GPU-hours**, not the 5–6 h previously
+recorded here. Sharded three ways that is ~3.5 h per account, comfortably inside Kaggle's 30 h
+weekly quota. Cost is dominated by `neggradplus` (337 s) and `scrub` (231 s); `neggrad` and
+`salun` are nearly free at 15 s and 29 s.
+
+---
+
+## Stage 5, account 1 of 3 — 80 runs, three defects, one of them systemic (9 Sep 2026)
+
+Ran clean end to end in 3.55 h, matching the 10.6 h projection for all 240 exactly. Four of six
+methods are sound and their 56 runs are **keepers**. The other two are not, and the reason they
+are not turned out to be the same reason.
+
+### The systemic finding: three methods' update budgets scale with |Df|
+
+`epochs` over the *forget* loader means the update count is proportional to the forget-set size.
+The size axis spans 10x (rand-500 → rand-5000), so those methods received 10x different compute
+across it:
+
+| condition | \|Df\| | neggrad | salun | scrub ascent | retain-driven three |
+|---|---|---|---|---|---|
+| rand-500 / canary-500 | 500 | **10** | 10 | 4 | 970 |
+| rand-2500 | 2500 | 50 | 50 | 20 | 930 |
+| rand-3000 / mem-\* | 3000 | 60 | 60 | 24 | 920 |
+| rand-5000 | 5000 | **100** | 100 | 40 | 880 |
+
+**Any "size effect" we report would be partly a compute effect.** That is a confound on one of
+the four experimental axes, not a tuning nuisance, and it is the root cause of both defects.
+
+### Defect 1 — `neggrad` is a no-op again, at rand-500
+
+retain 0.9918, test 0.9235, forget_acc 0.9820, **1.7 s**. Ten steps. Identical to the bug the
+first pilot caught; the fix held at 3000 and did not generalise down the size axis. Across
+conditions the control ranges from untouched (rand-500) through partial (canary-500, retain
+0.4297) to total collapse (everything ≥ 2500, retain 0.018–0.036) — useless as a control, because
+its strength is set by the condition rather than by us.
+
+**Fixed:** budgeted in **steps, not epochs**; `steps=60` anchors on the primary condition
+(5 × ⌈3000/256⌉), so the mem-\* results already collected are unchanged and only the other sizes
+move.
+
+### Defect 2 — `salun` collapses at small forget sets, and it was a fidelity bug
+
+retain **0.3422 / 0.2255** at rand-500 and 0.6930 / 0.7141 at canary-500, against 0.97 at
+rand-5000. Damage running *backwards* in forget-set size is the tell.
+
+Cause: the implementation paired **one retain batch per forget batch**. That undersamples Dr by
+|Dr|/|Df| — 15x at the 3000 conditions, **97x at rand-500** — so the repair term scaled with the
+forget set while the random-label damage saturated (500 random labels are easy to fit; 5000 are
+not). This is also the "15x retain-exposure gap" flagged earlier and never chased down; it was
+already costing 4.8 pp of test accuracy at mem-high-3000.
+
+Verified against the authors' code (`OPTML-Group/Unlearn-Saliency`): their CIFAR-10 path iterates
+the forget loader and then the **full** retain loader every epoch, and their CIFAR-100 path
+concatenates the two datasets — equivalent in retain exposure. **So this was a deviation from
+published SalUn, not a hyperparameter choice.**
+
+**Fixed:** full retain pass per epoch. Cost rises from ~25 s to ~210 s per run, which moves the
+Stage 5 total from 10.6 h to **~12.6 h**. SalUn's *forget* pass still scales with |Df| — it must
+randomise every forget example — so its damage:repair ratio still varies with size, but now it
+varies the way the published method does, which is the defensible position.
+
+### Watch item — `scrub` at rand-5000
+
+retain 0.7352 / test 0.7263 on seed 2, against 0.96–0.999 everywhere else. SCRUB's max-steps
+phase is `-KL(student, teacher)`, unbounded above, and its budget scales with |Df| (40 ascent
+steps at rand-5000 vs 24 at 3000) — the same divergence shape as the old NegGrad+. **Only one
+seed of scrub landed in this shard**, so this is not yet distinguishable from seed variance.
+Decide after accounts 2 and 3 report seeds 0,1,3,4. Do **not** pre-emptively change SCRUB: its
+structure is faithful to the paper.
+
+### Analysis note for Stage 8 — the oracle gap is ill-conditioned on mem-low
+
+At `mem-low-3000`, fine-tune returns forget_acc 1.0000 / 0.9997. Cross-check that against the
+Stage 3 oracle table above: the `mem-low-3000` oracle scores **0.998** on its own forget set. The
+base model is ≈ 1.000. So the denominator of
+
+    G = |m(Mu) − m̄(Mr)| / (|m(M0) − m̄(Mr)| + ε)
+
+is |1.000 − 0.998| ≈ **0.002**, which is smaller than the oracle ensemble's own sd (0.0058 at
+mem-high). G is dividing by noise and will explode.
+
+This is the arithmetic consequence of something already recorded above and understood as
+intended — that mem-low is a **negative control**, where M₀ ≈ M_r and there is nothing to detect.
+The design is fine; the *normalization* is what breaks, and only on this condition.
+
+This is not a bug in the runs and needs no re-run, but the normalization cannot be applied
+blindly across the difficulty axis. Report the raw gap alongside G for mem-low, or gate G on the
+denominator exceeding the oracle ensemble's own spread. **Decide before Stage 8, not during it.**
+
+### What has to be re-run, and what does not
+
+- **Stage 3 (base + oracles) and Stage 4 (shadows): nothing.** Neither depends on unlearning
+  method configuration.
+- **Stage 5: only `neggrad` and `salun`.** Accounts 2 and 3 pull the fix before their first run
+  and produce nothing stale. Account 1 re-runs its own 24 affected runs (neggrad × 1 seed × 8
+  conditions, salun × 2 seeds × 8) — roughly one hour, dominated by the now-slower SalUn.
+- Account 1's other 56 runs stand as they are.
+
+### The mechanism that makes a re-run safe: hyperparameter shas
+
+A `run_id` names *what* was unlearned, not how (`{tag}__{role}__{forget}__{method}__{seed}`), so a
+method fix reuses the same id — and `run_unlearn` skipped on `has_checkpoint(rid)` alone. **A
+re-run after a fix would have silently kept the broken weights and reported success.** Both of
+this stage's defects would have survived their own fixes.
+
+`run_unlearn` now resolves the method config up front, hashes it, and compares against the stored
+checkpoint's `hparams_sha` before deciding to skip. Same sha → skip, instantly. Different sha →
+print the mismatch and recompute. Re-running a whole shard is therefore the correct action in all
+cases: unchanged runs cost a metadata read, changed ones are redone, and nothing is silently
+stale either way.
 
 ---
 
@@ -467,22 +671,20 @@ this — do not pool size conditions as if they were separate samples.
 
 ## Next actions
 
-1. **Push to `main`.** The notebooks install from `COMMIT = "main"`, so pushing is how the two
-   method fixes reach Kaggle. Nothing else needs re-uploading.
-2. **Re-run the pilot, same one command**, before spending real compute:
-   `forgetcheck queue --stage 5 --forget mem-high-3000 --seeds 0`
-   Read three things off it: `neggrad` forget_acc must fall well below the oracle's 0.5575 *and*
-   visibly damage retain_acc (if retain stays ~0.99 it is still a no-op); `neggradplus` retain and
-   test must come back to ~0.9 (if they are still ~0.33 the cap is not binding); everything else
-   should be within noise of the table above.
-3. **Full Stage 5** — 240 runs, ~5–6 h sharded across accounts — only once 2 reads clean.
-4. Then **Stage 6: the audit modules** (behavioral, privacy_population, privacy_rmia,
+1. **Full Stage 5** — 240 runs, ~10.6 GPU-hours, ~3.5 h per account sharded three ways:
+   `forgetcheck queue --stage 5 --account K --of 3`. Cleared to launch; the pilot re-run is clean.
+2. Then **Stage 6: the audit modules** (behavioral, privacy_population, privacy_rmia,
    representation, relearning). This is the actual contribution and none of it is written yet.
-5. Stage 7 calibration, Stage 8 analysis.
+3. Stage 7 calibration, Stage 8 analysis.
 
-Still open from the review: the ICLR 2026 OpenReview submission `9IzfArmoHq` has never been read
-(bot check blocks fetching). It is a possible further novelty threat and someone should open it
-in a browser.
+**Novelty thread `9IzfArmoHq` — closed, 8 Sep 2026.** It is *Unlearning Evaluation through Subset
+Statistical Independence* (ICLR 2026 = arXiv 2603.00587): a retrain-free HSIC audit that argues
+retrained-oracle evaluation "defeats the purpose of developing a standalone, verifiably unlearned
+model." **Not a scoop — all four of ForgetCheck's openings survive intact**, and the critique
+targets deployment-time verification, not research-time audit validation, which needs a ground
+truth by definition. Full analysis in `RESEARCH_LOG.md` §7.1, including an argument for adding
+SDE as a sixth audit module and a testable prediction that our collapsed `neggrad` control breaks
+it.
 
 Environment notes: Python 3.13.5, torch 2.13.0+cpu locally. pandas needed a
 `--force-reinstall --no-cache-dir` on this machine — its first install left broken C extensions.

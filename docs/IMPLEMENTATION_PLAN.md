@@ -552,7 +552,8 @@ Deliberately unresolved. Each needs one measurement, not one argument.
 ## 11. Before week 3
 
 - [ ] `git init`, push to a private GitHub repo all four can access
-- [ ] Resolve the outstanding novelty thread: OpenReview `9IzfArmoHq` (research log §7)
+- [x] Resolve the outstanding novelty thread: OpenReview `9IzfArmoHq` — done 8 Sep 2026, it is
+      arXiv 2603.00587 (SDE). Not a scoop; see research log §7.1
 - [ ] Confirm RUM memorization scores download successfully
 - [ ] All four members read and sign off on **§4**
 - [ ] Create the shared Kaggle artefact Dataset and confirm write access from a notebook

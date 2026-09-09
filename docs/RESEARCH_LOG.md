@@ -53,7 +53,7 @@ positioning needs re-checking.
 | The ChatGPT share link in the brief | Renders client-side; the fetch returns only the page title | Review is based on the `.docx` alone. **If that conversation contains constraints not in the document, some recommendations may change — worth pasting the key parts.** |
 | OpenReview PDFs (2 attempts) | Bot-verification interstitial | Routed around via arXiv mirrors and search summaries |
 | CVPR 2026 workshop survey PDF | HTTP 403 from `openaccess.thecvf.com` | Non-critical; used only as background context |
-| ICLR 2026 paper `9IzfArmoHq` | OpenReview interstitial | **Unresolved — see §7.** Titled something like "Unlearning Evaluation"; could be a further novelty threat |
+| ICLR 2026 paper `9IzfArmoHq` = arXiv 2603.00587 | arXiv HTML mirror (OpenReview blocked) | **Resolved — see §7.1.** *Unlearning Evaluation through Subset Statistical Independence.* Retrain-free HSIC audit. Not a scoop; all four openings survive |
 
 ### 1.3 Search strategy
 
@@ -565,9 +565,7 @@ Recording these so nobody re-litigates settled points.
 
 Stated plainly so they are not mistaken for settled.
 
-1. **ICLR 2026 paper `9IzfArmoHq`** — surfaced in search as an ICLR 2026 paper on unlearning
-   evaluation; the OpenReview PDF was behind a bot check. **Could be a further novelty threat.**
-   Worth 10 minutes with a browser before the synopsis is finalised.
+1. ~~**ICLR 2026 paper `9IzfArmoHq`**~~ — **RESOLVED, 8 September 2026. See §7.1 below.**
 2. **PMLR volume numbers** for ICML 2026 (doc says vol. 306) and AISTATS 2026 (vol. 300) are not
    publicly confirmed. ICML 2025 was PMLR 267; AISTATS 2025 was PMLR 258. Cite arXiv IDs plus
    "to appear" until confirmed.
@@ -582,7 +580,80 @@ Stated plainly so they are not mistaken for settled.
    `.docx`, some recommendations may need revisiting.
 6. **The compute table's per-run figures** for Kaggle GPUs are estimates from published training
    schedules, not measurements on Kaggle. Only the CPU numbers (§5.3) are measured. Pin the GPU
-   figure down with the week-6 pilot.
+   figure down with the week-6 pilot.  **UPDATE 8 Sep 2026: measured.** See
+   `STATUS.md` — 956 s for six unlearning runs, and the estimate was uniformly ~2.1x low.
+
+---
+
+### 7.1 `9IzfArmoHq` resolved — *Unlearning Evaluation through Subset Statistical Independence*
+
+**How it was finally read.** OpenReview blocks automated fetching on both `/forum` and `/pdf`,
+and its `api2` endpoint 302s to the same challenge page. The way through was not OpenReview at
+all: a verbatim search on a distinctive phrase from the abstract surfaced the arXiv mirror,
+**arXiv 2603.00587**, whose `/html/` rendering is readable. Method worth remembering — search a
+literal sentence, then take the arXiv HTML.
+
+**What it is.** ICLR 2026 conference paper. Proposes **SDE (Split-half Dependence Evaluation)**:
+split a target subset in half, compute the Hilbert–Schmidt Independence Criterion between model
+activations on the two halves (Gaussian RBF kernel, 200 shuffles to estimate the distribution),
+and compare against reference in-training / out-of-training subsets by Jensen–Shannon divergence.
+The premise is that training induces shared influence across co-trained samples, so an
+in-training subset shows higher split-half dependence than an out-of-training one.
+
+Evaluates **Random-label, Unroll, SalUn, Sparsity** on SVHN / CIFAR-10 / CIFAR-100 /
+Tiny-ImageNet with AllCNN and ResNet-18. Compares SDE against MMD and Wasserstein distance.
+
+**Its central claim is aimed squarely at ForgetCheck's foundation** — verbatim:
+
+> "This evaluation paradigm suffers from a major limitation: it relies on access to a retrained
+> model trained with remaining data only, which defeats the purpose of developing a standalone,
+> verifiably unlearned model."
+
+**Assessment: not a scoop, and the critique does not land on us. Two different activities are
+being conflated by that sentence.**
+
+- *Deployment-time verification* — "is this deployed model unlearned?" — must be retrain-free,
+  because the whole point was to avoid retraining. That is SDE's target and the critique is fair
+  there.
+- *Research-time audit validation* — "does this audit measure what it claims to measure?" —
+  **requires** a ground truth, and the retrained oracle is that ground truth.
+
+ForgetCheck is the second activity. The proof that this distinction is real and not special
+pleading is that **SDE itself cannot escape it**: to show SDE works, the paper validates it
+against subsets whose in/out status is known by construction. That is the same epistemic move
+ForgetCheck makes with retrained oracles and canaries. A paper cannot use ground truth to
+validate its own audit and then deny ground truth to everyone else's.
+
+**Overlap against ForgetCheck's four surviving openings — all four survive intact:**
+
+| Opening | SDE | Status |
+|---|---|---|
+| Reversibility as a ranked family | no relearning-speed measure at all | **untouched** |
+| Intra-family privacy disagreement | no MIA comparison; argues *against* MIA | **untouched** |
+| Difficulty interaction (RUM strata) | no memorization analysis; only forget *ratio* and subset *size* | **untouched** |
+| Audit validity scoring | compares SDE to MMD/Wasserstein on one binary task; no cross-audit ranking | **untouched** |
+
+It also does **not** use CKA or any representation-similarity measure, so Audit Layer 4 is
+unaffected.
+
+**Net effect: it strengthens the motivation rather than weakening it.** The field is now actively
+producing retrain-free audits. "Which audits are valid, and do they agree with each other?"
+becomes *more* urgent when new audits arrive faster than anyone validates them. SDE is a citation
+that motivates ForgetCheck, not one that pre-empts it.
+
+**Opportunity — add SDE as a sixth audit module.** Cost is low: it is HSIC over model outputs,
+and the representation audit already caches GAP-pooled activations, so the inputs exist. Benefit
+is high: it makes the audit set current with ICLR 2026, and it lets ForgetCheck do to SDE what
+SDE cannot do for itself — check it against a retrained oracle across memorization strata.
+
+**A specific, testable prediction worth running first.** A constant predictor has no per-sample
+output variation, so its split-half HSIC should collapse toward independence — which SDE reads as
+*successfully unlearned*. Our `neggrad` control at `mem-high-3000` is exactly that: macro-F1
+0.0187 at accuracy 0.1031 (pilot 2, `STATUS.md`). If SDE passes a model that has been destroyed,
+that is a clean, concrete audit-validity failure of a brand-new ICLR paper, obtained from a
+control we already ran. **State this as a hypothesis, not a result, until measured** — it depends
+on how reference sets are constructed, and the paper names reference-set choice as a known
+sensitivity.
 
 ---
 

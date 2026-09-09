@@ -175,3 +175,32 @@ def test_usage_reporting(store, model):
     assert usage["checkpoints"][0] == 2  # .pt and .json
     assert usage["activations"][0] == 1
     assert usage["forget_sets"] == (0, 0.0)
+
+class TestStaleHyperparameters:
+    """A run_id names *what* was unlearned, not how -- so a method fix reuses the same id.
+
+    Without a hyperparameter check, re-running after a fix hits `has_checkpoint`, skips, and
+    leaves the broken weights in place while reporting success. Stage 5 turned up two method
+    defects whose fixes would have been swallowed exactly this way.
+    """
+
+    def test_metadata_round_trips_the_hyperparameter_sha(self, tmp_path):
+        import torch
+
+        from forgetcheck.registry import ArtifactStore
+
+        store = ArtifactStore(tmp_path)
+        rid = "c10r18__unlearn__rand-500__neggrad__train0"
+        store.save_checkpoint(rid, {"w": torch.zeros(2)}, hparams_sha="aaaa1111")
+        assert store.load_meta(rid).hparams_sha == "aaaa1111"
+
+    def test_a_config_change_changes_the_sha(self):
+        from forgetcheck.registry import config_sha
+        from forgetcheck.unlearn import get_unlearner
+
+        def sha(**kw):
+            return config_sha({"method": "neggrad", **get_unlearner("neggrad", **kw).cfg})
+
+        assert sha() == sha(), "sha must be stable for an unchanged config"
+        assert sha() != sha(steps=7), "a changed step budget must change the sha"
+        assert sha() != sha(lr=0.5), "a changed lr must change the sha"

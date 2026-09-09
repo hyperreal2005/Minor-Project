@@ -60,6 +60,14 @@ def _cycle(loader):
             yield batch
 
 
+def _has_batches(loader) -> bool:
+    """True if the loader yields at least one batch. Guards `_cycle`, which spins on an empty
+    loader instead of raising."""
+    for _ in loader:
+        return True
+    return False
+
+
 # --------------------------------------------------------------------------- 1. fine-tune
 
 
@@ -107,25 +115,34 @@ class NegGrad(Unlearner):
     """
 
     name = "neggrad"
-    # Pilot at mem-high-3000 with the original epochs=1, lr=0.001 gave forget_acc 0.9723 --
-    # *higher* than fine-tune's 0.9460, and retain_acc untouched at 0.9973. One epoch over 3000
-    # examples is 12 steps at lr 0.001: the control was not controlling anything, and a reader
-    # would have concluded that gradient ascent is harmless. Raised until it visibly destroys,
-    # which is the entire point of including it.
-    defaults = {"epochs": 5, "lr": 0.01, "momentum": 0.9, "weight_decay": 0.0}
+    # Budgeted in **steps, not epochs**, and this is load-bearing rather than cosmetic.
+    #
+    # Epoch-based budgeting makes the update count proportional to |Df|, which varies 10x across
+    # this study's size axis (rand-500 .. rand-5000). Stage 5 measured exactly that failure: at
+    # 5 epochs the control got 10 steps on rand-500 and was a **no-op** (retain 0.9918, 1.7 s),
+    # 60 steps at 3000 (total collapse, retain 0.020), and 100 at rand-5000. A control whose
+    # strength is set by the condition cannot be compared across conditions, and worse, it
+    # confounds the size axis: a "size effect" would partly be a compute effect.
+    #
+    # 60 steps anchors on the primary condition (5 epochs x ceil(3000/256)), so the mem-* results
+    # already collected are unchanged and only the other sizes are brought into line.
+    defaults = {"steps": 60, "lr": 0.01, "momentum": 0.9, "weight_decay": 0.0}
 
     def unlearn(self, model: nn.Module, ctx: UnlearnContext) -> nn.Module:
         set_determinism(ctx.seed)
         m = self.clone(model).to(ctx.device).train()
         opt = _sgd(m, self.cfg)
         crit = nn.CrossEntropyLoss()
+        if not _has_batches(ctx.forget_loader):
+            return m  # nothing to ascend on; _cycle would spin forever
 
-        for _ in range(self.cfg["epochs"]):
-            for x, y, _ in ctx.forget_loader:
-                x, y = x.to(ctx.device), y.to(ctx.device)
-                opt.zero_grad(set_to_none=True)
-                (-crit(m(x), y)).backward()  # ascend
-                opt.step()
+        forget_iter = _cycle(ctx.forget_loader)
+        for _ in range(int(self.cfg["steps"])):
+            x, y, _ = next(forget_iter)
+            x, y = x.to(ctx.device), y.to(ctx.device)
+            opt.zero_grad(set_to_none=True)
+            (-crit(m(x), y)).backward()  # ascend
+            opt.step()
         return m
 
 
@@ -336,8 +353,18 @@ class SalUn(Unlearner):
         opt = _sgd(m, self.cfg)
         crit = nn.CrossEntropyLoss()
         gen = torch.Generator(device="cpu").manual_seed(ctx.seed)
-        retain_iter = _cycle(ctx.retain_loader)
 
+        # Each epoch runs the random-label pass over Df, then a **full** pass over Dr. This
+        # matches the authors' CIFAR-10 path in OPTML-Group/Unlearn-Saliency, which iterates the
+        # forget loader and then the retain loader in full every epoch (their CIFAR-100 path
+        # concatenates the two datasets, which is equivalent in retain exposure).
+        #
+        # An earlier version paired one retain *batch* with each forget batch. That silently
+        # undersampled Dr by |Dr|/|Df| -- 15x at the 3000-example conditions and 97x at
+        # rand-500 -- so the repair term scaled with the forget set instead of being constant.
+        # Stage 5 caught it: SalUn held retain 0.97 at rand-5000 but **collapsed to 0.23-0.34 at
+        # rand-500**, damage running backwards in forget-set size. Restoring the full pass fixes
+        # both the fidelity gap and a confound on the size axis.
         for _ in range(self.cfg["epochs"]):
             m.train()
             for xf, yf, _ in ctx.forget_loader:
@@ -352,7 +379,7 @@ class SalUn(Unlearner):
                 crit(m(xf), y_rand).backward()
                 self._masked_step(opt, m, mask)
 
-                xr, yr, _ = next(retain_iter)
+            for xr, yr, _ in ctx.retain_loader:
                 xr, yr = xr.to(ctx.device), yr.to(ctx.device)
                 opt.zero_grad(set_to_none=True)
                 crit(m(xr), yr).backward()

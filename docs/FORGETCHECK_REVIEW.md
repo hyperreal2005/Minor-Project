@@ -579,9 +579,14 @@ volume numbers in m1 are unverified. These are the additions a 2026 reviewer wil
 
 ### The three things to do first
 
-1. **Resolve the one unchecked novelty thread.** An ICLR 2026 paper on unlearning evaluation
-   (OpenReview `9IzfArmoHq`) sat behind a bot check and could not be read. Ten minutes in a browser.
-   Do it before the synopsis is approved.
+1. ~~**Resolve the one unchecked novelty thread.**~~ **DONE, 8 September 2026.** The ICLR 2026
+   paper `9IzfArmoHq` is *Unlearning Evaluation through Subset Statistical Independence*
+   (= arXiv 2603.00587) — a retrain-free HSIC audit. **Not a scoop:** it uses no relearning
+   measure, no MIA comparison, no CKA, and no memorization analysis, so all four of ForgetCheck's
+   openings survive untouched. Its argument that retrained-oracle evaluation "defeats the purpose"
+   applies to *deployment-time verification*, not to *research-time audit validation*, which needs
+   a ground truth by definition — as SDE's own validation-by-construction concedes. It strengthens
+   the motivation and is a candidate sixth audit module. Full analysis: `RESEARCH_LOG.md` §7.1.
 2. **Stand up the checkpoint and result-record schema in week 3.** Under an ephemeral-session
    workflow this is load-bearing, and it is the single thing most likely to cost weeks 13–14 if
    deferred.
@@ -620,7 +625,8 @@ findings and reasoning: [`RESEARCH_LOG.md`](RESEARCH_LOG.md).
 *Review conducted 25 August 2026 against ForgetCheck Master Reference v1.0, revised the same day
 once hardware and team details were supplied. CPU training figures are **measured on the target
 machine**; GPU figures are estimates from published throughput and should be pinned down in the
-week-6 pilot. Two bibliography items (m1) and one possible novelty threat (OpenReview `9IzfArmoHq`)
-could not be verified and are flagged rather than resolved. The ChatGPT conversation linked in the
+week-6 pilot. Two bibliography items (m1) could not be verified and are flagged rather than
+resolved. The possible novelty threat (OpenReview `9IzfArmoHq`) **was resolved on 8 September
+2026** — see the amendment above and `RESEARCH_LOG.md` §7.1. The ChatGPT conversation linked in the
 brief renders client-side and could not be retrieved, so this review is based on the master document
 alone — if it contains constraints not in the document, they may change some recommendations.*

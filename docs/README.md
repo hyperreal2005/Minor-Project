@@ -52,8 +52,9 @@ than with method count.
 
 ## Before the synopsis is approved
 
-- Resolve the one unchecked novelty thread: ICLR 2026 paper, OpenReview `9IzfArmoHq`. It sat behind
-  a bot check during the review. Ten minutes in a browser.
+- ~~Resolve the one unchecked novelty thread: OpenReview `9IzfArmoHq`.~~ **Done, 8 Sep 2026.** It is
+  *Unlearning Evaluation through Subset Statistical Independence* (arXiv 2603.00587). Not a scoop;
+  all four openings survive. See `RESEARCH_LOG.md` §7.1.
 - Freeze the result-record and checkpoint schema (week 3). Under an ephemeral-session training
   workflow this is load-bearing infrastructure, and it is the single thing most likely to cost
   weeks 13–14 if deferred.

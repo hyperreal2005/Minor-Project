@@ -48,7 +48,7 @@ def ctx():
 
 FAST = {
     "finetune": {"epochs": 1},
-    "neggrad": {"epochs": 1},
+    "neggrad": {"steps": 4},
     "neggradplus": {"epochs": 1},
     "scrub": {"epochs": 2, "msteps": 1},
     "salun": {"epochs": 1},
@@ -107,7 +107,7 @@ class TestSemantics:
             with torch.no_grad():
                 return float(sum(crit(m(x), y) * len(y) for x, y, _ in ctx.forget_loader))
 
-        out = get_unlearner("neggrad", epochs=3, lr=0.05).unlearn(model, ctx)
+        out = get_unlearner("neggrad", steps=9, lr=0.05).unlearn(model, ctx)
         assert forget_loss(out) > forget_loss(model)
 
     def test_finetune_never_touches_the_forget_set(self, ctx):
@@ -127,9 +127,70 @@ class TestSemantics:
             with torch.no_grad():
                 return float(sum(crit(m(x), y) * len(y) for x, y, _ in ctx.retain_loader))
 
-        plain = get_unlearner("neggrad", epochs=3, lr=0.05).unlearn(model, ctx)
+        plain = get_unlearner("neggrad", steps=9, lr=0.05).unlearn(model, ctx)
         plus = get_unlearner("neggradplus", epochs=3, lr=0.05, alpha=0.95).unlearn(model, ctx)
         assert retain_loss(plus) < retain_loss(plain)
+
+    def test_neggrad_budget_does_not_scale_with_the_forget_set(self, ctx):
+        """The size axis (rand-500 .. rand-5000) is an experimental variable, so the destructive
+        control's strength must not be a function of |Df| -- otherwise a "size effect" is partly
+        a compute effect. Stage 5 measured exactly that: 10 steps at rand-500 was a no-op
+        (retain 0.9918) while 60 steps at 3000 was total collapse (retain 0.020).
+
+        Only neggrad is asserted this strictly. SalUn's *forget* pass must scale with |Df| --
+        it has to randomise the label of every forget example -- so for SalUn the invariant is
+        that the retain *repair* is constant, which
+        `test_salun_sees_the_whole_retain_set_each_epoch` covers.
+        """
+        name = "neggrad"
+        big = UnlearnContext(
+            forget_loader=loader(96, seed=1),          # 4x the fixture's forget set
+            retain_loader=ctx.retain_loader,
+            forget_eval_loader=loader(96, seed=1),
+            device="cpu", num_classes=10, seed=0,
+        )
+        counted = {}
+        for label, c in (("small", ctx), ("big", big)):
+            n = 0
+            model = tiny_model()
+            orig = torch.optim.SGD.step
+
+            def step(self, *a, **k):
+                nonlocal n
+                n += 1
+                return orig(self, *a, **k)
+
+            torch.optim.SGD.step = step
+            try:
+                get_unlearner(name, **FAST[name]).unlearn(model, c)
+            finally:
+                torch.optim.SGD.step = orig
+            counted[label] = n
+
+        assert counted["small"] == counted["big"], (
+            f"{name} took {counted['small']} steps on a 48-example forget set and "
+            f"{counted['big']} on a 96-example one; the budget tracks |Df|"
+        )
+
+    def test_salun_sees_the_whole_retain_set_each_epoch(self, ctx):
+        # Fidelity check against OPTML-Group/Unlearn-Saliency, whose CIFAR-10 path runs the
+        # forget loader and then the *full* retain loader every epoch. Pairing one retain batch
+        # per forget batch -- the earlier bug -- undersamples Dr by |Dr|/|Df|, which is 97x at
+        # rand-500 and is what collapsed that condition.
+        seen = []
+        wrapped = list(ctx.retain_loader)
+
+        class Counting(list):
+            def __iter__(self):
+                seen.append(1)
+                return iter(wrapped)
+
+        c = UnlearnContext(
+            forget_loader=ctx.forget_loader, retain_loader=Counting(wrapped),
+            forget_eval_loader=ctx.forget_eval_loader, device="cpu", num_classes=10, seed=0,
+        )
+        get_unlearner("salun", epochs=3).unlearn(tiny_model(), c)
+        assert len(seen) == 3, f"retain loader traversed {len(seen)} times over 3 epochs"
 
     def test_neggrad_shipped_defaults_actually_destroy(self, ctx):
         # Regression on the mem-high-3000 pilot. The original defaults (epochs=1, lr=0.001) were
@@ -147,7 +208,7 @@ class TestSemantics:
                 return float(sum(crit(m(x), y) * len(y) for x, y, _ in ctx.forget_loader))
 
         base = forget_loss(model)
-        weak = forget_loss(get_unlearner("neggrad", epochs=1, lr=0.001).unlearn(model, ctx))
+        weak = forget_loss(get_unlearner("neggrad", steps=3, lr=0.001).unlearn(model, ctx))
         shipped = forget_loss(get_unlearner("neggrad").unlearn(model, ctx))
         # The tiny MLP cannot reproduce ResNet-18 magnitudes, so this compares the two configs
         # rather than testing an absolute threshold: the shipped one must ascend by an order of
