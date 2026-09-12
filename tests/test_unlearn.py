@@ -50,7 +50,7 @@ FAST = {
     "finetune": {"epochs": 1},
     "neggrad": {"steps": 4},
     "neggradplus": {"epochs": 1},
-    "scrub": {"epochs": 2, "msteps": 1},
+    "scrub": {"epochs": 2, "msteps": 1, "max_steps": 2},
     "salun": {"epochs": 1},
     "l1sparse": {"epochs": 1},
     "ssd": {},
@@ -130,6 +130,31 @@ class TestSemantics:
         plain = get_unlearner("neggrad", steps=9, lr=0.05).unlearn(model, ctx)
         plus = get_unlearner("neggradplus", epochs=3, lr=0.05, alpha=0.95).unlearn(model, ctx)
         assert retain_loss(plus) < retain_loss(plain)
+
+    def test_scrub_ascent_budget_does_not_scale_with_the_forget_set(self, ctx):
+        # All five seeds of SCRUB collapsed at rand-5000 (40 ascent steps) and held everywhere
+        # at 24 or fewer. The max-steps count must be fixed, not proportional to |Df|.
+        big = UnlearnContext(
+            forget_loader=loader(96, seed=1), retain_loader=ctx.retain_loader,
+            forget_eval_loader=loader(96, seed=1), device="cpu", num_classes=10, seed=0,
+        )
+        counted = {}
+        for label, c in (("small", ctx), ("big", big)):
+            n = 0
+            orig = torch.optim.SGD.step
+
+            def step(self, *a, **k):
+                nonlocal n
+                n += 1
+                return orig(self, *a, **k)
+
+            torch.optim.SGD.step = step
+            try:
+                get_unlearner("scrub", epochs=2, msteps=1, max_steps=4).unlearn(tiny_model(), c)
+            finally:
+                torch.optim.SGD.step = orig
+            counted[label] = n
+        assert counted["small"] == counted["big"], counted
 
     def test_neggrad_budget_does_not_scale_with_the_forget_set(self, ctx):
         """The size axis (rand-500 .. rand-5000) is an experimental variable, so the destructive

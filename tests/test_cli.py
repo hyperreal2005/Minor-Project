@@ -236,10 +236,19 @@ class TestExecuteReporting:
     """
 
     @staticmethod
-    def _store(present=()):
+    def _store(present=(), shas=None):
+        shas = shas or {}
+
+        class Meta:
+            def __init__(self, sha):
+                self.hparams_sha = sha
+
         class S:
             def has_checkpoint(self, rid):
                 return rid in present
+
+            def load_meta(self, rid):
+                return Meta(shas.get(rid, ""))
         return S()
 
     @staticmethod
@@ -267,6 +276,55 @@ class TestExecuteReporting:
         out = capsys.readouterr().out
         assert out.count("[have]") == 2 and out.count("[todo]") == 3
         assert "would run 3, 2 already present (5 total)" in out
+
+    def test_a_checkpoint_from_an_older_configuration_is_stale_not_have(self, capsys):
+        """Reproduces the Stage 5 re-run that reported "would run 0, 80 already present".
+
+        The stale-hyperparameter guard lived inside run_unlearn, but _execute skipped on
+        has_checkpoint before ever calling it -- so the guard was unreachable from the CLI, and
+        a real run would have skipped all 80 exactly as the dry run did. The check has to live
+        at the layer that decides what runs.
+        """
+        from forgetcheck.cli import _execute
+
+        rid = "c10r18__unlearn__rand-500__neggrad__train2"
+        item = WorkItem(rid, "unlearn", lambda: None, hparams_sha="new-config")
+        store = self._store(present={rid}, shas={rid: "old-config"})
+
+        _execute([item], dry_run=True, store=store)
+        out = capsys.readouterr().out
+        assert "[stale]" in out and "[have]" not in out
+        assert "would run 1 (1 of them stale, from an older configuration), 0 already present" in out
+
+    def test_a_stale_item_actually_runs(self, capsys):
+        from forgetcheck.cli import _execute
+
+        rid = "c10r18__unlearn__rand-500__salun__train1"
+        ran = []
+        item = WorkItem(rid, "unlearn", lambda: ran.append(rid), hparams_sha="new")
+        _execute([item], dry_run=False, store=self._store(present={rid}, shas={rid: "old"}))
+        assert ran == [rid], "a stale checkpoint must be recomputed, not kept"
+        assert "ran 1 (1 of them stale, from an older configuration)" in capsys.readouterr().out
+
+    def test_a_matching_sha_is_still_skipped(self):
+        # The other 56 of account 1's runs: same configuration, must cost only a metadata read.
+        from forgetcheck.cli import _execute
+
+        rid = "c10r18__unlearn__rand-500__scrub__train2"
+        ran = []
+        item = WorkItem(rid, "unlearn", lambda: ran.append(rid), hparams_sha="same")
+        _execute([item], dry_run=False, store=self._store(present={rid}, shas={rid: "same"}))
+        assert ran == []
+
+    def test_items_without_a_sha_are_judged_on_presence_alone(self):
+        # Base/oracle/shadow items do not carry one; their behaviour is unchanged.
+        from forgetcheck.cli import _execute
+
+        rid = "c10r18__base__full__none__train0"
+        ran = []
+        item = WorkItem(rid, "base", lambda: ran.append(rid))
+        _execute([item], dry_run=False, store=self._store(present={rid}))
+        assert ran == []
 
     def test_real_run_counts_what_ran(self, capsys):
         from forgetcheck.cli import _execute

@@ -22,9 +22,9 @@ from typing import Callable, Iterable, Sequence
 
 from .config import Context, find_configs
 from .data.forget_sets import spec_by_id
-from .registry import parse_run_id, run_id
+from .registry import config_sha, parse_run_id, run_id
 from .train import base_task, oracle_task, run_task, shadow_task
-from .unlearn import CORE_METHODS, base_run_id_for, method_names, run_unlearn
+from .unlearn import CORE_METHODS, base_run_id_for, get_unlearner, method_names, run_unlearn
 
 __all__ = ["main", "build_parser", "plan_stage", "shard", "WorkItem"]
 
@@ -36,15 +36,31 @@ FULL = "full"
 
 @dataclass(frozen=True, slots=True)
 class WorkItem:
-    """One unit of work: an identity, a description, and a thunk that performs it."""
+    """One unit of work: an identity, a description, and a thunk that performs it.
+
+    ``hparams_sha`` is the hash of the configuration this item *would* run with. A run_id names
+    what is computed, not how, so a method fix reuses the same id -- and a checkpoint under that
+    id is only "already done" if it was produced by the same configuration. Items that do not
+    set it are judged on presence alone.
+    """
 
     run_id: str
     kind: str
     run: Callable[[], object]
+    hparams_sha: str | None = None
 
     def sort_key(self) -> str:
         """Deterministic ordering, independent of how the plan happened to be built."""
         return self.run_id
+
+    def state(self, store) -> str:
+        """``'todo'``, ``'have'``, or ``'stale'`` (present, but from a different configuration)."""
+        if not store.has_checkpoint(self.run_id):
+            return "todo"
+        if self.hparams_sha is None:
+            return "have"
+        stored = store.load_meta(self.run_id).hparams_sha
+        return "have" if stored == self.hparams_sha else "stale"
 
 
 def _base_items(ctx: Context) -> list[WorkItem]:
@@ -133,6 +149,9 @@ def _unlearn_items(ctx: Context, methods: Sequence[str] | None = None) -> list[W
         spec = ctx.spec(forget_id)
         fidx = ctx.forget_indices(forget_id)
         for method in methods:
+            # The same hash run_unlearn computes, so the two can never disagree about what
+            # "already done" means. Cheap: it instantiates the method object, not the model.
+            sha = config_sha({"method": method, **get_unlearner(method).cfg})
             for seed in ctx.seeds["train"]:
                 rid = run_id(role="unlearn", forget=forget_id, method=method, seed=seed)
                 items.append(
@@ -144,6 +163,7 @@ def _unlearn_items(ctx: Context, methods: Sequence[str] | None = None) -> list[W
                             device=ctx.device,
                             batch_size=ctx.train_config.batch_size,
                         ),
+                        hparams_sha=sha,
                     )
                 )
     return items
@@ -232,18 +252,25 @@ def _execute(items: Iterable[WorkItem], *, dry_run: bool, store) -> int:
     cell shows red.
     """
     items = list(items)
-    todo = skipped = failed = 0
+    todo = skipped = stale = failed = 0
 
     for i, item in enumerate(items, 1):
-        if store.has_checkpoint(item.run_id):
+        state = item.state(store)
+        if state == "have":
             skipped += 1
             if dry_run:
-                print(f"  [have] {item.run_id}")
+                print(f"  [have]  {item.run_id}")
             continue
 
+        # 'todo' and 'stale' both run. A stale checkpoint was produced by a configuration that
+        # no longer exists -- Stage 5's original neggrad and salun, for instance -- and keeping
+        # it would mean the fix never reached the data. Counted separately so the summary line
+        # says how much of a re-run is actually recomputation.
         todo += 1
+        if state == "stale":
+            stale += 1
         if dry_run:
-            print(f"  [todo] {item.run_id}")
+            print(f"  [{state}] {item.run_id}")
             continue
 
         print(f"[{i}/{len(items)}] {item.run_id} ...", flush=True)
@@ -256,11 +283,12 @@ def _execute(items: Iterable[WorkItem], *, dry_run: bool, store) -> int:
             continue
         print(f"    done in {time.perf_counter() - t0:.1f}s", flush=True)
 
+    stale_note = f" ({stale} of them stale, from an older configuration)" if stale else ""
     if dry_run:
-        print(f"\nwould run {todo}, {skipped} already present ({len(items)} total)")
+        print(f"\nwould run {todo}{stale_note}, {skipped} already present ({len(items)} total)")
     else:
         ran = todo - failed
-        print(f"\nran {ran}, skipped {skipped} already present, {failed} failed")
+        print(f"\nran {ran}{stale_note}, skipped {skipped} already present, {failed} failed")
     return 1 if failed else 0
 
 

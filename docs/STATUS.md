@@ -17,8 +17,8 @@ genuinely unresolved — as opposed to merely unwritten.
 | 2 — Forget sets | A | **DONE** | ✅ **Fully passes** — verified against the real RUM scores |
 | 3 — Base models & oracles | A | **DONE, EXECUTED** | ✅ 62/62 trained on Kaggle; seed-SD gate passes |
 | 4 — Unlearning methods | A, B | **DONE** | Six methods + SSD behind one interface |
-| 5 — Full-pipeline pilot | all | **PASSED** | ✅ Re-run clean after two method fixes; full 240 cleared to launch |
-| 6 — Audits | B, C | not started | — |
+| 5 — Full-pipeline pilot | all | **240/240 RUN** | ⚠️ 64 stale (scrub fix + acct 1 pre-fix); re-run in progress |
+| 6 — Audits | B, C | **IN PROGRESS** | base + Layer 1 (behavioral) done with degeneracy guards |
 | 7 — Calibration & validity | D | not started | — |
 | 8 — Analysis | D | not started | — |
 
@@ -28,7 +28,7 @@ genuinely unresolved — as opposed to merely unwritten.
 > Plan stage 4 is "write the unlearning methods"; queue stage 4 is shadows. Read the CLI's
 > `status` output for the queue meaning.
 
-**Test suite: 284 passing** (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
+**Test suite: 313 passing** (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
 
 ---
 
@@ -603,6 +603,89 @@ checkpoint's `hparams_sha` before deciding to skip. Same sha → skip, instantly
 print the mismatch and recompute. Re-running a whole shard is therefore the correct action in all
 cases: unchanged runs cost a metadata read, changed ones are redone, and nothing is silently
 stale either way.
+
+---
+
+## Stage 5 complete on all three accounts — and the fixes verified (12 Sep 2026)
+
+Accounts 2 and 3 pulled the neggrad/salun fixes before running. 240/240 runs exist; 64 are stale
+and will be recomputed (below).
+
+### Both fixes confirmed on 160 fresh runs
+
+**`neggrad`** at `steps=60`: mean retain 0.1007 (acct 2) / 0.1020 (acct 3), collapsed at **every**
+condition including rand-500 (0.077–0.109) and canary-500 (0.100–0.110). The size-dependence is
+gone. Consistent control across the whole axis.
+
+**`salun`** with the full retain pass: rand-500 retain 0.9964–0.9983 (was 0.23–0.34), canary-500
+0.9973–0.9979 (was 0.69–0.71). Runtime 222–257 s, as projected.
+
+### Correction — SalUn's "standout forgetting" was an artefact of the bug
+
+Two earlier entries above call SalUn "far and away the best on the forget axis" (*G* = 0.109 at
+mem-high-3000). That was measured on the under-sampled-retain implementation. With faithful
+retain exposure, at the same condition:
+
+| | forget_acc | *G* | test_acc |
+|---|---|---|---|
+| SalUn, broken (acct 1, seeds 1, 4) | 0.591 / 0.626 | 0.109 | 0.880 / 0.880 |
+| SalUn, fixed (accts 2–3, seeds 0, 2, 3) | 0.820 / 0.822 / 0.833 | **0.604** | 0.925 / 0.930 / 0.926 |
+
+The broken version's forgetting came bundled with a 4.5 pp utility loss — it was partly
+*untraining*. The fixed version forgets less and keeps test accuracy at the oracle's 0.9228.
+**Retract the standout claim.** SalUn now sits in the same band as the others.
+
+Updated oracle-gap ranking at mem-high-3000 (5-seed means, scrub pending re-run):
+neggradplus 0.380 · salun 0.604 · l1sparse 0.769 · scrub 0.800 · finetune 0.888 · neggrad 1.087.
+The naive metric still ranks neggrad **first** and the oracle gap still ranks it **last** — the
+headline finding survives the correction intact; only the middle of the table moved.
+
+### `scrub` at rand-5000 — the watch item is now a confirmed defect
+
+All five seeds: retain **0.735 / 0.827 / 0.555 / 0.721 / 0.648**, against 0.94–0.999 at every
+condition of 3000 or fewer. Same shape as the old NegGrad+: `-KL(student, teacher)` is unbounded
+above and the ascent budget scaled with |Df| (40 steps at rand-5000, 24 at 3000). Not seed
+variance — condition-specific divergence.
+
+**Fixed** the same way as neggrad: `max_steps=24`, split evenly across the `msteps` epochs. The
+3000-example conditions are *numerically identical* to the published schedule (2 × 12); only the
+other four sizes move. SCRUB at mem-low shows mild seed-dependent damage (0.939–0.981) at 24
+steps — a property of ascent on easy data, not divergence; leave it.
+
+**Pilot before committing**: scrub at rand-500 gets 24 ascent steps where it had 4, i.e. six
+passes over the same 500 examples per max-epoch. Run `--methods scrub --forget rand-500,rand-5000`
+first (10 runs, ~40 min) and confirm retain stays above 0.9 at both ends of the axis.
+
+### The re-run guard was unreachable from the CLI — fixed
+
+The dry run on account 1 reported "would run 0, 80 already present". The stale-hyperparameter
+check lived inside `run_unlearn`, but `cli._execute` skipped on `has_checkpoint` *before* ever
+calling it — so a real run would have skipped all 80 too, and the fixes would never have reached
+the data. Moved to the layer that decides what runs: `WorkItem` carries the sha its
+configuration produces, `WorkItem.state()` returns `todo` / `have` / `stale`, and `_execute`
+runs both `todo` and `stale`, printing `[stale]` and counting them separately.
+
+### What is stale, per account
+
+| account | stale runs | why | est. |
+|---|---|---|---|
+| 1 | 8 neggrad + 16 salun + 8 scrub = **32** | ran before every fix | ~1.6 h |
+| 2 | 16 scrub | scrub fix landed after | ~1.3 h |
+| 3 | 16 scrub | scrub fix landed after | ~1.0 h |
+
+Each account re-runs its own shard unchanged: `queue --stage 5 --account K --of 3`. The dry run
+will now list them as `[stale]`.
+
+### Other observations from the full 240 (no action)
+
+- **Canary condition works as ground truth.** Fine-tune, which never sees the forget set, drops
+  canary accuracy from ~1.0 to 0.16–0.19 by retain exposure alone. SCRUB retains the most
+  (0.31–0.34), L1-sparse the least (0.09–0.12). That spread is the signal Stage 7 scores against.
+- **Run-to-run nondeterminism is visible on identical configs**: e.g. `neggrad` ce_loss ranges
+  58.7–80.8 across seeds/accounts at the same collapse. Already recorded above; it is the
+  seed + hardware variance the 5 seeds absorb.
+- Account 2 runtimes are ~20% above account 3 (finetune 215 s vs 177 s) — different GPU
+  allocation. Efficiency comparisons must be within-account or normalized.
 
 ---
 

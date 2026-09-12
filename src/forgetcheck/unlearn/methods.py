@@ -230,12 +230,23 @@ class SCRUB(Unlearner):
     student arbitrarily far from the teacher on the forget set, which over-forgets: the goal is
     to resemble a model retrained without the data, and that model does *not* have pathological
     outputs on it.
+
+    **Deviation: the max-steps budget is a fixed step count, not epochs.** The paper specifies
+    ``msteps`` in epochs over Df, so its ascent budget scales with |Df| -- a 10x range on this
+    study's size axis. Stage 5 measured what that does: across all five seeds SCRUB held retain
+    0.94-0.999 at every condition of 3000 or fewer examples (24 ascent steps) and **collapsed to
+    0.55-0.83 at rand-5000** (40 steps). ``-KL(student, teacher)`` is unbounded above, so more
+    ascent is not more forgetting, it is eventually divergence. ``max_steps`` (24, anchored on
+    the primary condition's 2 x ceil(3000/256)) is split evenly across the first ``msteps``
+    epochs, which leaves every 3000-example condition *numerically identical* to the published
+    schedule and only rescales the others.
     """
 
     name = "scrub"
     defaults = {
         "epochs": 5,
         "msteps": 2,
+        "max_steps": 24,
         "lr": 0.005,
         "alpha": 0.5,  # weight on the retain KL term
         "gamma": 1.0,  # weight on the retain CE term
@@ -266,11 +277,18 @@ class SCRUB(Unlearner):
                 * T
             )
 
+        msteps = int(self.cfg["msteps"])
+        per_epoch = int(self.cfg["max_steps"]) // max(1, msteps) if _has_batches(
+            ctx.forget_loader
+        ) else 0
+        forget_iter = _cycle(ctx.forget_loader) if per_epoch else None
+
         for epoch in range(self.cfg["epochs"]):
             student.train()
 
-            if epoch < self.cfg["msteps"]:
-                for x, _y, _ in ctx.forget_loader:
+            if epoch < msteps and forget_iter is not None:
+                for _ in range(per_epoch):
+                    x, _y, _ = next(forget_iter)
                     x = x.to(ctx.device)
                     opt.zero_grad(set_to_none=True)
                     with torch.no_grad():
