@@ -199,8 +199,24 @@ class TestStaleHyperparameters:
         from forgetcheck.unlearn import get_unlearner
 
         def sha(**kw):
-            return config_sha({"method": "neggrad", **get_unlearner("neggrad", **kw).cfg})
+            return config_sha(get_unlearner("neggrad", **kw).signature())
 
         assert sha() == sha(), "sha must be stable for an unchanged config"
         assert sha() != sha(steps=7), "a changed step budget must change the sha"
         assert sha() != sha(lr=0.5), "a changed lr must change the sha"
+
+    def test_an_implementation_version_bump_changes_the_sha_without_touching_hparams(self):
+        """SalUn's retain-exposure fix changed the loop, not the defaults, and its 16 pre-fix
+        checkpoints on account 1 read as current. `version` is how a behaviour change with the
+        same hyperparameters becomes visible to the guard."""
+        from forgetcheck.registry import config_sha
+        from forgetcheck.unlearn.methods import FineTune
+
+        class Revised(FineTune):
+            version = 2
+
+        v1, v2 = FineTune().signature(), Revised().signature()
+        assert "impl_version" not in v1, "version 1 is omitted so existing shas stay valid"
+        assert v2["impl_version"] == 2
+        assert {k: v for k, v in v2.items() if k != "impl_version"} == v1
+        assert config_sha(v1) != config_sha(v2)

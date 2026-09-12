@@ -28,7 +28,7 @@ genuinely unresolved — as opposed to merely unwritten.
 > Plan stage 4 is "write the unlearning methods"; queue stage 4 is shadows. Read the CLI's
 > `status` output for the queue meaning.
 
-**Test suite: 333 passing** (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
+**Test suite: 337 passing** (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
 
 ---
 
@@ -688,6 +688,61 @@ will now list them as `[stale]`.
   allocation. Efficiency comparisons must be within-account or normalized.
 
 ---
+
+## SCRUB pilot at `max_steps=24` — passes at both ends of the size axis (12 Sep 2026)
+
+10 runs, both conditions, all five seeds, one account:
+
+| condition | retain_acc | test_acc | forget_acc | was (40 / 4 steps) |
+|---|---|---|---|---|
+| rand-5000 | 0.9986–0.9992 | 0.934–0.936 | 0.996–0.999 | retain **0.55–0.83** |
+| rand-500 | 0.9986–0.9991 | 0.933–0.937 | 0.978–0.992 | retain 0.999, forget 0.996–1.0 |
+
+The rand-5000 divergence is gone. The rand-500 risk — six passes over the same 500 examples per
+max-epoch — did not materialise: per-example forget loss is ~5x higher there (0.03–0.09 vs
+0.01–0.013), so the ascent pressure is real, but the 4850-step retain anchor absorbs it.
+
+**The comparison band I gave for rand-5000 forget_acc (0.85–0.95) was wrong** — that is SCRUB's
+band at *mem-high*, not on random forget sets. On rand-2500 and rand-3000 SCRUB already sat at
+0.995–0.998, and rand-5000 now matches that exactly. The correct read is "consistent with the
+other rand-* conditions", and it is.
+
+**Observation, not a defect**: at 24 ascent steps SCRUB barely moves forget accuracy on random
+forget sets (0.996+ against M₀ ≈ 1.0 and an oracle of ~0.93). It is stable and conservative — a
+weak forgetter at this budget. That is a legitimate result for the disagreement analysis (a
+model this close to M₀ should be flagged by every audit) and must **not** be tuned away.
+
+**Cleared: all three accounts re-run their shards.** Account 1's dry run should show 30 stale
+(8 neggrad + 16 salun + 6 scrub; its two pilot scrub runs are already current). Accounts 2 and
+3: 16 stale each. The pilot's 8 extra checkpoints on account 1 belong to other shards; records
+and checkpoints are both keyed by run_id, so merging account directories in order 1 → 2 → 3
+lets the owning account's copy win for both files together.
+
+## The guard has a blind spot: implementation changes with unchanged hyperparameters (13 Sep 2026)
+
+Account 1's re-run dry run showed **16 stale, not 30**: the 8 neggrad and 8 scrub, but all 16
+salun as `[have]`. The neggrad and scrub fixes changed a hyperparameter (`epochs → steps`, new
+`max_steps`), so their shas moved. The SalUn fix changed the *loop* — full retain pass instead of
+one batch per forget batch — with the **identical** `defaults` dict. Same hyperparameters, same
+sha; the guard compares hashes of configuration and had nothing to notice.
+
+Two things follow:
+
+**`Unlearner.version`** — a class attribute folded into the signature hash whenever a method's
+behaviour changes without its hyperparameters changing. Version 1 ("as first shipped") is omitted
+from the hash so every sha already stored stays valid; from version 2 up it is included. The
+signature is now computed in exactly one place (`Unlearner.signature()`), used by both
+`run_unlearn` and the CLI — two independent call sites is how the guard came to be unreachable
+before.
+
+**SalUn is deliberately *not* bumped to version 2.** Bumping it now would mark accounts 2 and
+3's 24 salun runs stale too, and those were produced by the fixed code — 1.5 GPU-hours of
+correct work redone for bookkeeping. Instead account 1 recomputes its 16 with `--force`, after
+which every salun checkpoint in the project is from the fixed implementation. The version field
+is for the *next* change of this kind, which will now be caught automatically.
+
+**`--force`** recomputes runs whose sha matches, and refuses to run without a `--forget`,
+`--methods` or `--seeds` filter — one mistyped flag must not be able to queue 240 runs.
 
 ## Stage 6 progress (12 Sep 2026)
 

@@ -227,6 +227,16 @@ def test_unlearning_without_its_base_model_fails_loudly(tiny_ctx):
         )
 
 
+class TestForceGuard:
+    def test_force_without_a_filter_is_refused(self):
+        # One mistyped flag must not be able to queue 240 runs of recomputation.
+        from forgetcheck.cli import build_parser, cmd_queue
+
+        args = build_parser().parse_args(["queue", "--stage", "5", "--force"])
+        with pytest.raises(SystemExit, match="--force must be combined"):
+            cmd_queue(args)
+
+
 class TestFilterMatching:
     """filter_items must match conditions exactly, never as substrings."""
 
@@ -350,6 +360,30 @@ class TestExecuteReporting:
         item = WorkItem(rid, "base", lambda: ran.append(rid))
         _execute([item], dry_run=False, store=self._store(present={rid}))
         assert ran == []
+
+    def test_force_recomputes_a_current_checkpoint(self, capsys):
+        # The SalUn case: implementation changed, hyperparameters did not, sha matches, and the
+        # only honest way to say "redo it anyway" is to say so explicitly.
+        from forgetcheck.cli import _execute
+
+        rid = "c10r18__unlearn__rand-500__salun__train1"
+        ran = []
+        item = WorkItem(rid, "unlearn", lambda: ran.append(rid), hparams_sha="same")
+        store = self._store(present={rid}, shas={rid: "same"})
+        _execute([item], dry_run=True, store=store, force=True)
+        assert "[forced]" in capsys.readouterr().out
+        _execute([item], dry_run=False, store=store, force=True)
+        assert ran == [rid]
+        assert "ran 1 (1 of them forced)" in capsys.readouterr().out
+
+    def test_force_does_not_touch_items_that_are_absent_anyway(self):
+        from forgetcheck.cli import _execute
+
+        ran = []
+        item = WorkItem("c10r18__unlearn__rand-500__salun__train1", "unlearn",
+                        lambda: ran.append(1), hparams_sha="x")
+        _execute([item], dry_run=False, store=self._store(), force=True)
+        assert ran == [1]  # a todo item runs exactly once, forced or not
 
     def test_real_run_counts_what_ran(self, capsys):
         from forgetcheck.cli import _execute

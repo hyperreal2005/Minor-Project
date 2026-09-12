@@ -73,7 +73,7 @@ def run_unlearn(
     # re-running after a method fix would hit `has_checkpoint` and silently skip, leaving the old
     # broken weights in place while the console reported success. That is precisely how the
     # Stage 5 neggrad and salun defects would have survived their own fix.
-    hp = config_sha({"method": method, **get_unlearner(method, **(hparams or {})).cfg})
+    hp = config_sha(get_unlearner(method, **(hparams or {})).signature())
     if skip_existing and store.has_checkpoint(rid):
         stored = store.load_meta(rid).hparams_sha
         if stored == hp:

@@ -51,6 +51,26 @@ class Unlearner(ABC):
     #: Default hyperparameters, overridden per-run from ``configs/methods/<name>.yaml``.
     defaults: Mapping[str, Any] = {}
 
+    #: Implementation version. **Bump this whenever the method's behaviour changes without its
+    #: hyperparameters changing.** The stale-checkpoint guard compares configuration hashes, and
+    #: a loop-structure fix with the same ``defaults`` is invisible to it -- exactly what happened
+    #: with SalUn's retain-exposure fix in Stage 5, whose 16 pre-fix checkpoints on account 1 read
+    #: as current because nothing in the hash had moved. Version 1 is "as first shipped" and is
+    #: omitted from the hash, so the shas already stored for unchanged methods stay valid.
+    version: int = 1
+
+    def signature(self) -> dict[str, Any]:
+        """Everything that determines what this method computes, for hashing.
+
+        The single source of truth for the stale-checkpoint guard: ``run_unlearn`` stores a hash
+        of this, and the CLI compares against it. Two call sites computing it independently is
+        how the guard came to be unreachable once already.
+        """
+        sig: dict[str, Any] = {"method": self.name, **self.cfg}
+        if self.version > 1:
+            sig["impl_version"] = self.version
+        return sig
+
     def __init__(self, **cfg: Any):
         merged = {**self.defaults, **cfg}
         unknown = set(cfg) - set(self.defaults)

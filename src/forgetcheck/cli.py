@@ -151,7 +151,7 @@ def _unlearn_items(ctx: Context, methods: Sequence[str] | None = None) -> list[W
         for method in methods:
             # The same hash run_unlearn computes, so the two can never disagree about what
             # "already done" means. Cheap: it instantiates the method object, not the model.
-            sha = config_sha({"method": method, **get_unlearner(method).cfg})
+            sha = config_sha(get_unlearner(method).signature())
             for seed in ctx.seeds["train"]:
                 rid = run_id(role="unlearn", forget=forget_id, method=method, seed=seed)
                 items.append(
@@ -248,7 +248,7 @@ def _ctx(args) -> Context:
     return Context(configs=configs, device=args.device, root=Path(args.root))
 
 
-def _execute(items: Iterable[WorkItem], *, dry_run: bool, store) -> int:
+def _execute(items: Iterable[WorkItem], *, dry_run: bool, store, force: bool = False) -> int:
     """Run (or, under ``dry_run``, list) a queue of work items.
 
     Anything already in the store is skipped rather than recomputed — that is what makes a
@@ -263,6 +263,8 @@ def _execute(items: Iterable[WorkItem], *, dry_run: bool, store) -> int:
 
     for i, item in enumerate(items, 1):
         state = item.state(store)
+        if force and state == "have":
+            state = "forced"  # present and current by hash, recomputed on the operator's say-so
         if state == "have":
             skipped += 1
             if dry_run:
@@ -274,7 +276,7 @@ def _execute(items: Iterable[WorkItem], *, dry_run: bool, store) -> int:
         # it would mean the fix never reached the data. Counted separately so the summary line
         # says how much of a re-run is actually recomputation.
         todo += 1
-        if state == "stale":
+        if state in ("stale", "forced"):
             stale += 1
         if dry_run:
             print(f"  [{state}] {item.run_id}")
@@ -290,7 +292,8 @@ def _execute(items: Iterable[WorkItem], *, dry_run: bool, store) -> int:
             continue
         print(f"    done in {time.perf_counter() - t0:.1f}s", flush=True)
 
-    stale_note = f" ({stale} of them stale, from an older configuration)" if stale else ""
+    why = "forced" if force else "stale, from an older configuration"
+    stale_note = f" ({stale} of them {why})" if stale else ""
     if dry_run:
         print(f"\nwould run {todo}{stale_note}, {skipped} already present ({len(items)} total)")
     else:
@@ -301,13 +304,18 @@ def _execute(items: Iterable[WorkItem], *, dry_run: bool, store) -> int:
 
 def cmd_queue(args) -> int:
     """Run this account's share of a stage, optionally narrowed to a subset."""
+    forget = args.forget.split(",") if args.forget else None
+    methods = args.methods.split(",") if args.methods else None
+    seeds = [int(x) for x in args.seeds.split(",")] if args.seeds else None
+    if args.force and not (forget or methods or seeds):
+        # An unfiltered --force would recompute an entire stage -- 240 runs, ~12 GPU-hours --
+        # on one mistyped flag. Refuse before loading anything.
+        raise SystemExit("--force must be combined with --forget, --methods or --seeds")
+
     ctx = _ctx(args)
     items = plan_stage(ctx, args.stage)
     total = len(items)
 
-    forget = args.forget.split(",") if args.forget else None
-    methods = args.methods.split(",") if args.methods else None
-    seeds = [int(x) for x in args.seeds.split(",")] if args.seeds else None
     if forget or methods or seeds:
         items = filter_items(items, forget=forget, methods=methods, seeds=seeds)
         if not items:
@@ -323,7 +331,7 @@ def cmd_queue(args) -> int:
         f"stage {args.stage} ({label}): {len(items)} items{narrowed} "
         f"for account {args.account} of {args.of}\n"
     )
-    return _execute(items, dry_run=args.dry_run, store=ctx.store)
+    return _execute(items, dry_run=args.dry_run, store=ctx.store, force=args.force)
 
 
 def cmd_train_base(args) -> int:
@@ -429,6 +437,8 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--methods", default=None,
                    help="comma-separated methods, e.g. finetune,salun")
     q.add_argument("--seeds", default=None, help="comma-separated seeds, e.g. 0 or 0,1")
+    q.add_argument("--force", action="store_true",
+                   help="recompute matching runs even if present and current; requires a filter")
     q.set_defaults(func=cmd_queue)
 
     b = sub.add_parser("train-base", help="train one original model")
