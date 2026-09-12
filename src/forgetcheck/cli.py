@@ -197,7 +197,7 @@ def shard(items: Sequence[WorkItem], *, account: int, of: int) -> list[WorkItem]
 def filter_items(
     items: Sequence[WorkItem],
     *,
-    forget: str | None = None,
+    forget: Sequence[str] | None = None,
     methods: Sequence[str] | None = None,
     seeds: Sequence[int] | None = None,
 ) -> list[WorkItem]:
@@ -210,10 +210,17 @@ def filter_items(
     all six methods, before committing hours to the full matrix. It is equally the way to re-run
     one method after changing it, without touching the 200-odd runs that are already correct.
     """
+    # A bare string is wrapped rather than iterated: `"rand-500" in "rand-5000"` is True as a
+    # substring test, which would silently admit the wrong condition.
+    if isinstance(forget, str):
+        forget = [forget]
+    if isinstance(methods, str):
+        methods = [methods]
+
     out = []
     for it in items:
         key = parse_run_id(it.run_id)
-        if forget is not None and key.forget != forget:
+        if forget is not None and key.forget not in forget:
             continue
         if methods is not None and key.method not in methods:
             continue
@@ -298,10 +305,11 @@ def cmd_queue(args) -> int:
     items = plan_stage(ctx, args.stage)
     total = len(items)
 
+    forget = args.forget.split(",") if args.forget else None
     methods = args.methods.split(",") if args.methods else None
     seeds = [int(x) for x in args.seeds.split(",")] if args.seeds else None
-    if args.forget or methods or seeds:
-        items = filter_items(items, forget=args.forget, methods=methods, seeds=seeds)
+    if forget or methods or seeds:
+        items = filter_items(items, forget=forget, methods=methods, seeds=seeds)
         if not items:
             raise SystemExit(
                 f"no stage-{args.stage} items match forget={args.forget!r} "
@@ -417,7 +425,7 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--account", type=int, default=1, help="1-based account index")
     q.add_argument("--of", type=int, default=1, help="how many accounts share this stage")
     q.add_argument("--forget", default=None,
-                   help="restrict to one forget condition, e.g. mem-high-3000")
+                   help="comma-separated forget conditions, e.g. mem-high-3000 or rand-500,rand-5000")
     q.add_argument("--methods", default=None,
                    help="comma-separated methods, e.g. finetune,salun")
     q.add_argument("--seeds", default=None, help="comma-separated seeds, e.g. 0 or 0,1")

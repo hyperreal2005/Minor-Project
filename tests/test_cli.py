@@ -227,6 +227,31 @@ def test_unlearning_without_its_base_model_fails_loudly(tiny_ctx):
         )
 
 
+class TestFilterMatching:
+    """filter_items must match conditions exactly, never as substrings."""
+
+    @staticmethod
+    def _items(*forgets):
+        return [
+            WorkItem(f"c10r18__unlearn__{f}__scrub__train0", "unlearn", lambda: None)
+            for f in forgets
+        ]
+
+    def test_a_list_of_conditions_selects_exactly_those(self):
+        from forgetcheck.cli import filter_items
+
+        got = filter_items(self._items("rand-500", "rand-5000", "rand-2500"),
+                           forget=["rand-500", "rand-5000"])
+        assert sorted(parse_run_id(i.run_id).forget for i in got) == ["rand-500", "rand-5000"]
+
+    def test_a_bare_string_does_not_substring_match(self):
+        # "rand-500" is a substring of "rand-5000"; passing a string must not admit both.
+        from forgetcheck.cli import filter_items
+
+        got = filter_items(self._items("rand-500", "rand-5000"), forget="rand-5000")
+        assert [parse_run_id(i.run_id).forget for i in got] == ["rand-5000"]
+
+
 class TestExecuteReporting:
     """The summary line must match what was actually listed.
 

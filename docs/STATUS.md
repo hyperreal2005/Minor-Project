@@ -18,7 +18,7 @@ genuinely unresolved — as opposed to merely unwritten.
 | 3 — Base models & oracles | A | **DONE, EXECUTED** | ✅ 62/62 trained on Kaggle; seed-SD gate passes |
 | 4 — Unlearning methods | A, B | **DONE** | Six methods + SSD behind one interface |
 | 5 — Full-pipeline pilot | all | **240/240 RUN** | ⚠️ 64 stale (scrub fix + acct 1 pre-fix); re-run in progress |
-| 6 — Audits | B, C | **IN PROGRESS** | base + Layer 1 (behavioral) done with degeneracy guards |
+| 6 — Audits | B, C | **IN PROGRESS** | base + Layers 1–2 done (behavioral, privacy_population) with degeneracy guards |
 | 7 — Calibration & validity | D | not started | — |
 | 8 — Analysis | D | not started | — |
 
@@ -28,7 +28,7 @@ genuinely unresolved — as opposed to merely unwritten.
 > Plan stage 4 is "write the unlearning methods"; queue stage 4 is shadows. Read the CLI's
 > `status` output for the queue meaning.
 
-**Test suite: 313 passing** (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
+**Test suite: 333 passing** (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
 
 ---
 
@@ -686,6 +686,33 @@ will now list them as `[stale]`.
   seed + hardware variance the 5 seeds absorb.
 - Account 2 runtimes are ~20% above account 3 (finetune 215 s vs 177 s) — different GPU
   allocation. Efficiency comparisons must be within-account or normalized.
+
+---
+
+## Stage 6 progress (12 Sep 2026)
+
+| module | state | decisions worth knowing |
+|---|---|---|
+| `audits/base.py` | done | `Degeneracy` measured once per model; `UNDEFINED` = NaN so it cannot be averaged in silently; audits are logit-consumers (shard-local) unless they declare `needs_weights` |
+| `behavioral.py` (L1) | done | emits only the four reference-requiring metrics; raw accuracies stay in Stage 5's `meta` records to avoid double-counting the family |
+| `privacy_population.py` (L2) | done | no oracle dependency by design — oracles get their AUC by passing through the same audit; dependency-free ROC-AUC (Mann–Whitney) and L-BFGS logistic attacker, 5-fold out-of-fold |
+| `privacy_rmia.py` (L3) | next | |
+| `representation.py` (L4) | | |
+| `relearning.py` (L5) | | the only `needs_weights` audit |
+| `sde.py` (L6) | | needs 3 new registry metrics — a four-person decision, see `RESEARCH_LOG.md` §7.1 |
+| `runner.py` | | target enumeration, logit caching, record assembly |
+
+**A detail the L2 tests corrected.** I had claimed the constant predictor gives *three* flat attack
+features and therefore an AUC of exactly 0.5 through ties. Wrong: confidence and entropy are
+flat, but per-example **loss varies with the true label** (low when *y* equals the predicted
+class). That variation is label information — shared by members and non-members — so it carries
+no membership signal, and the attacker lands at chance *plus sampling noise* (0.445 in the test),
+not at 0.5 exactly. The recorded value is still the true one; the wording in the docstring and
+the test assertion were tightened to say what actually happens.
+
+**CLI now accepts `--forget a,b`** like `--methods` and `--seeds`, with a guard against substring
+matching (`"rand-500" in "rand-5000"` is `True` as a string test and would have admitted the
+wrong condition).
 
 ---
 

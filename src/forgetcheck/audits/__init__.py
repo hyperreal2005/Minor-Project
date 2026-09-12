@@ -18,6 +18,7 @@ from .base import (
     register,
 )
 from .behavioral import Behavioral
+from .privacy_population import PopulationMIA
 
 __all__ = [
     "Audit",
@@ -30,4 +31,5 @@ __all__ = [
     "get_audit",
     "register",
     "Behavioral",
+    "PopulationMIA",
 ]
