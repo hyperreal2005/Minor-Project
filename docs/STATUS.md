@@ -28,7 +28,7 @@ genuinely unresolved — as opposed to merely unwritten.
 > Plan stage 4 is "write the unlearning methods"; queue stage 4 is shadows. Read the CLI's
 > `status` output for the queue meaning.
 
-**Test suite: 337 passing** (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
+**Test suite: 338 passing** (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
 
 ---
 
@@ -743,6 +743,22 @@ is for the *next* change of this kind, which will now be caught automatically.
 
 **`--force`** recomputes runs whose sha matches, and refuses to run without a `--forget`,
 `--methods` or `--seeds` filter — one mistyped flag must not be able to queue 240 runs.
+
+## Filters redrew the shard — caught by a dry run (13 Sep 2026)
+
+`--methods neggrad,salun,scrub --account 1 --of 3` listed **40** items with neggrad at seeds 0
+and 3. Account 1's neggrad seed is 2, and it was absent. `cmd_queue` filtered *then* sharded;
+the shard is a stripe over the sorted list, so a 3-method list stripes onto different seeds
+than a 6-method one. Salun and scrub landed on the same seeds by arithmetic coincidence, which
+made the list look plausible. Had it run, account 1 would have recomputed 16 neggrad runs that
+accounts 2 and 3 already hold correctly and left its own 8 stale ones untouched.
+
+Fixed: shard first, filter second. A filter narrows an account's share and can never redraw it;
+the test asserts the filtered result is a subset of the unfiltered share for every account, and
+that the old order provably is not. The `--of 1` pilots never exposed this because a shard of
+one is the whole list.
+
+The `--force` summary now counts stale and forced separately.
 
 ## Stage 6 progress (12 Sep 2026)
 

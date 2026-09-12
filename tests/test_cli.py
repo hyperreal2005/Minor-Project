@@ -139,6 +139,33 @@ class TestSharding:
         with pytest.raises(ValueError, match=r"account must be in"):
             shard(plan_stage(ctx, 4), account=0, of=3)
 
+    def test_a_filter_narrows_the_share_and_never_redraws_it(self, ctx):
+        """Reproduces the account-1 re-run: `--methods neggrad,salun,scrub --account 1 --of 3`
+        listed neggrad seeds 0 and 3 instead of the account's seed 2, because filtering ran
+        before sharding and striping a 3-method list lands on different seeds than a 6-method
+        one. Whatever the filter, the result must be a subset of the account's unfiltered share.
+        """
+        from forgetcheck.cli import filter_items
+
+        items = plan_stage(ctx, 5)
+        for account in (1, 2, 3):
+            share = {i.run_id for i in shard(items, account=account, of=3)}
+            narrowed = {
+                i.run_id
+                for i in filter_items(shard(items, account=account, of=3),
+                                      methods=["neggrad", "salun", "scrub"])
+            }
+            assert narrowed <= share, f"account {account}: filter produced items outside its share"
+            assert narrowed == {r for r in share if parse_run_id(r).method in ("neggrad", "salun", "scrub")}
+
+            # The wrong order -- what cmd_queue used to do -- provably redraws the share.
+            redrawn = {
+                i.run_id
+                for i in shard(filter_items(items, methods=["neggrad", "salun", "scrub"]),
+                               account=account, of=3)
+            }
+            assert redrawn != narrowed, "the bug this test guards against would not reproduce"
+
 
 @pytest.mark.requires_data
 class TestContext:
@@ -329,7 +356,7 @@ class TestExecuteReporting:
         _execute([item], dry_run=True, store=store)
         out = capsys.readouterr().out
         assert "[stale]" in out and "[have]" not in out
-        assert "would run 1 (1 of them stale, from an older configuration), 0 already present" in out
+        assert "would run 1 (1 stale, from an older configuration), 0 already present" in out
 
     def test_a_stale_item_actually_runs(self, capsys):
         from forgetcheck.cli import _execute
@@ -339,7 +366,7 @@ class TestExecuteReporting:
         item = WorkItem(rid, "unlearn", lambda: ran.append(rid), hparams_sha="new")
         _execute([item], dry_run=False, store=self._store(present={rid}, shas={rid: "old"}))
         assert ran == [rid], "a stale checkpoint must be recomputed, not kept"
-        assert "ran 1 (1 of them stale, from an older configuration)" in capsys.readouterr().out
+        assert "ran 1 (1 stale, from an older configuration)" in capsys.readouterr().out
 
     def test_a_matching_sha_is_still_skipped(self):
         # The other 56 of account 1's runs: same configuration, must cost only a metadata read.
@@ -374,7 +401,7 @@ class TestExecuteReporting:
         assert "[forced]" in capsys.readouterr().out
         _execute([item], dry_run=False, store=store, force=True)
         assert ran == [rid]
-        assert "ran 1 (1 of them forced)" in capsys.readouterr().out
+        assert "ran 1 (1 forced)" in capsys.readouterr().out
 
     def test_force_does_not_touch_items_that_are_absent_anyway(self):
         from forgetcheck.cli import _execute
@@ -460,5 +487,5 @@ class TestFiltering:
         # Silently running nothing would look like success; a typo must not do that.
         from forgetcheck.cli import main
 
-        with pytest.raises(SystemExit, match="no stage-5 items match"):
+        with pytest.raises(SystemExit, match="no stage-5 items in account 1's share match"):
             main(["--dry-run", "queue", "--stage", "5", "--methods", "typo"])

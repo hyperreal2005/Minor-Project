@@ -259,7 +259,7 @@ def _execute(items: Iterable[WorkItem], *, dry_run: bool, store, force: bool = F
     cell shows red.
     """
     items = list(items)
-    todo = skipped = stale = failed = 0
+    todo = skipped = stale = forced = failed = 0
 
     for i, item in enumerate(items, 1):
         state = item.state(store)
@@ -276,8 +276,10 @@ def _execute(items: Iterable[WorkItem], *, dry_run: bool, store, force: bool = F
         # it would mean the fix never reached the data. Counted separately so the summary line
         # says how much of a re-run is actually recomputation.
         todo += 1
-        if state in ("stale", "forced"):
+        if state == "stale":
             stale += 1
+        elif state == "forced":
+            forced += 1
         if dry_run:
             print(f"  [{state}] {item.run_id}")
             continue
@@ -292,8 +294,12 @@ def _execute(items: Iterable[WorkItem], *, dry_run: bool, store, force: bool = F
             continue
         print(f"    done in {time.perf_counter() - t0:.1f}s", flush=True)
 
-    why = "forced" if force else "stale, from an older configuration"
-    stale_note = f" ({stale} of them {why})" if stale else ""
+    parts = []
+    if stale:
+        parts.append(f"{stale} stale, from an older configuration")
+    if forced:
+        parts.append(f"{forced} forced")
+    stale_note = f" ({'; '.join(parts)})" if parts else ""
     if dry_run:
         print(f"\nwould run {todo}{stale_note}, {skipped} already present ({len(items)} total)")
     else:
@@ -313,20 +319,24 @@ def cmd_queue(args) -> int:
         raise SystemExit("--force must be combined with --forget, --methods or --seeds")
 
     ctx = _ctx(args)
-    items = plan_stage(ctx, args.stage)
-    total = len(items)
+    items = shard(plan_stage(ctx, args.stage), account=args.account, of=args.of)
+    share = len(items)
 
+    # Shard FIRST, then filter. The shard is striped over the sorted work list, so filtering
+    # before sharding changes which items fall in an account's stripe: with three methods
+    # instead of six, account 1's neggrad moved from seed 2 to seeds 0 and 3 -- runs that
+    # belong to other accounts -- and its own stale seed-2 runs dropped out of the list
+    # entirely. A filter must narrow an account's share, never redraw it.
     if forget or methods or seeds:
         items = filter_items(items, forget=forget, methods=methods, seeds=seeds)
         if not items:
             raise SystemExit(
-                f"no stage-{args.stage} items match forget={args.forget!r} "
-                f"methods={methods} seeds={seeds}"
+                f"no stage-{args.stage} items in account {args.account}'s share match "
+                f"forget={args.forget!r} methods={methods} seeds={seeds}"
             )
 
-    items = shard(items, account=args.account, of=args.of)
     label = STAGES[args.stage][0]
-    narrowed = f" (filtered from {total})" if len(items) != total else ""
+    narrowed = f" (filtered from this account's {share})" if len(items) != share else ""
     print(
         f"stage {args.stage} ({label}): {len(items)} items{narrowed} "
         f"for account {args.account} of {args.of}\n"
