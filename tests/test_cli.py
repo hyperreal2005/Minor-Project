@@ -316,10 +316,13 @@ class TestExecuteReporting:
     @staticmethod
     def _items(n, fail_at=()):
         def make(i):
-            def run():
+            rid = f"c10r18__base__full__none__train{i}"
+
+            def run(force=False):
                 if i in fail_at:
                     raise RuntimeError(f"boom {i}")
-            return WorkItem(f"c10r18__base__full__none__train{i}", "base", run)
+                return rid  # the runners' contract: run_id on compute, None on skip
+            return WorkItem(rid, "base", run)
         return [make(i) for i in range(n)]
 
     def test_dry_run_counts_todo_items(self, capsys):
@@ -363,7 +366,8 @@ class TestExecuteReporting:
 
         rid = "c10r18__unlearn__rand-500__salun__train1"
         ran = []
-        item = WorkItem(rid, "unlearn", lambda: ran.append(rid), hparams_sha="new")
+        item = WorkItem(rid, "unlearn", lambda force=False: (ran.append(rid), rid)[1],
+                        hparams_sha="new")
         _execute([item], dry_run=False, store=self._store(present={rid}, shas={rid: "old"}))
         assert ran == [rid], "a stale checkpoint must be recomputed, not kept"
         assert "ran 1 (1 stale, from an older configuration)" in capsys.readouterr().out
@@ -374,7 +378,8 @@ class TestExecuteReporting:
 
         rid = "c10r18__unlearn__rand-500__scrub__train2"
         ran = []
-        item = WorkItem(rid, "unlearn", lambda: ran.append(rid), hparams_sha="same")
+        item = WorkItem(rid, "unlearn", lambda force=False: (ran.append(rid), rid)[1],
+                        hparams_sha="same")
         _execute([item], dry_run=False, store=self._store(present={rid}, shas={rid: "same"}))
         assert ran == []
 
@@ -384,7 +389,7 @@ class TestExecuteReporting:
 
         rid = "c10r18__base__full__none__train0"
         ran = []
-        item = WorkItem(rid, "base", lambda: ran.append(rid))
+        item = WorkItem(rid, "base", lambda force=False: (ran.append(rid), rid)[1])
         _execute([item], dry_run=False, store=self._store(present={rid}))
         assert ran == []
 
@@ -395,7 +400,8 @@ class TestExecuteReporting:
 
         rid = "c10r18__unlearn__rand-500__salun__train1"
         ran = []
-        item = WorkItem(rid, "unlearn", lambda: ran.append(rid), hparams_sha="same")
+        item = WorkItem(rid, "unlearn", lambda force=False: (ran.append(rid), rid)[1],
+                        hparams_sha="same")
         store = self._store(present={rid}, shas={rid: "same"})
         _execute([item], dry_run=True, store=store, force=True)
         assert "[forced]" in capsys.readouterr().out
@@ -403,12 +409,38 @@ class TestExecuteReporting:
         assert ran == [rid]
         assert "ran 1 (1 forced)" in capsys.readouterr().out
 
+    def test_force_reaches_the_runner_not_just_the_label(self):
+        """Reproduces account 1's re-run: 16 salun rows printed `[forced]` and then
+        `done in 0.0s`, because --force relabelled the item but the thunk still called the
+        runner with skip_existing=True, whose own sha check declined the work."""
+        from forgetcheck.cli import _execute
+
+        rid = "c10r18__unlearn__canary-500__salun__train1"
+        seen = []
+        item = WorkItem(rid, "unlearn", lambda force=False: (seen.append(force), rid)[1],
+                        hparams_sha="same")
+        _execute([item], dry_run=False, store=self._store(present={rid}, shas={rid: "same"}),
+                 force=True)
+        assert seen == [True], "the runner must be told to compute, not merely asked"
+
+    def test_a_runner_that_declines_a_required_run_is_a_failure_not_a_success(self, capsys):
+        # If the runner returns None (its skip contract) for an item the CLI marked stale or
+        # forced, the checkpoint is still the old one. That must show red, not "done in 0.0s".
+        from forgetcheck.cli import _execute
+
+        rid = "c10r18__unlearn__canary-500__salun__train1"
+        item = WorkItem(rid, "unlearn", lambda force=False: None, hparams_sha="new")
+        rc = _execute([item], dry_run=False, store=self._store(present={rid}, shas={rid: "old"}))
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "runner skipped a run marked stale" in err
+
     def test_force_does_not_touch_items_that_are_absent_anyway(self):
         from forgetcheck.cli import _execute
 
         ran = []
         item = WorkItem("c10r18__unlearn__rand-500__salun__train1", "unlearn",
-                        lambda: ran.append(1), hparams_sha="x")
+                        lambda force=False: (ran.append(1), "rid")[1], hparams_sha="x")
         _execute([item], dry_run=False, store=self._store(), force=True)
         assert ran == [1]  # a todo item runs exactly once, forced or not
 

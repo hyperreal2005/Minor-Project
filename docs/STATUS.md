@@ -28,7 +28,7 @@ genuinely unresolved — as opposed to merely unwritten.
 > Plan stage 4 is "write the unlearning methods"; queue stage 4 is shadows. Read the CLI's
 > `status` output for the queue meaning.
 
-**Test suite: 338 passing** (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
+**Test suite: 340 passing** (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
 
 ---
 
@@ -759,6 +759,45 @@ that the old order provably is not. The `--of 1` pilots never exposed this becau
 one is the whole list.
 
 The `--force` summary now counts stale and forced separately.
+
+## `--force` relabelled but did not compute (13 Sep 2026)
+
+Account 1's forced re-run printed `[forced]` for the 16 salun runs and then `done in 0.0s` for
+each. Two layers skip: the CLI decides what runs, but `run_unlearn` keeps its own
+`skip_existing` presence-and-sha check so a bare call stays resumable. `--force` was wired into
+the CLI layer only; the thunk still called the runner with `skip_existing=True`, and the runner's
+sha matched, so it declined.
+
+Fixed in two places. Every thunk now accepts `force=True` and passes `skip_existing=not force`
+to its runner. And `_execute` now enforces the runners' return contract — `run_id` on compute,
+`None` on skip — so a `None` from an item marked stale or forced is reported as **FAILED: runner
+skipped a run marked …** and exits non-zero, instead of a green `done in 0.0s` over an unchanged
+checkpoint. That invariant would have caught this bug on the first row.
+
+The session that surfaced this was left running: its neggrad and scrub recomputations were
+correct, and the salun rows cost nothing. Salun is re-run alone afterwards.
+
+## Account 1 re-run, neggrad + scrub — verified (13 Sep 2026)
+
+All 8 `neggrad` (steps=60) collapsed uniformly, retain 0.095–0.106, including rand-500 (0.098,
+was the 0.992 no-op). All 8 `scrub` (max_steps=24) hold retain ≥ 0.9986 except mem-low (0.9416);
+rand-5000 is 0.9992 / forget 0.9964 (was 0.735 / 0.726). Both fixes confirmed on the last
+account that had not seen them.
+
+Two things in these rows worth knowing before the analysis:
+
+**Normalising SCRUB's budget changed its canary result, a lot.** canary-500 scrub went from
+forget_acc 0.31–0.34 at 4 ascent steps to **0.178** at 24, with retain unchanged (0.9989). It is
+now the second-best canary forgetter after l1sparse rather than the worst. Accounts 2 and 3's
+stale canary scrub rows will move the same way when re-run. This is exactly the size-axis
+confound in action — at |Df| = 500 the old schedule gave SCRUB a sixth of the ascent it got at
+3000, and it looked like a weak canary forgetter *because of the condition*, not the method.
+
+**SCRUB on mem-low is the highest-variance configuration seen so far.** Same seed, numerically
+identical schedule (24 steps both times): retain 0.9658 before, **0.9416** now — 2.4 pp of pure
+run-to-run nondeterminism, against the ≤ 0.9 pp seen on other methods. Ascent on the easiest
+examples is sensitive to batch order. Not a defect; it is what the five seeds are for, but it
+means SCRUB × mem-low needs its full seed spread before any claim is made about it.
 
 ## Stage 6 progress (12 Sep 2026)
 

@@ -38,6 +38,13 @@ FULL = "full"
 class WorkItem:
     """One unit of work: an identity, a description, and a thunk that performs it.
 
+    The thunk accepts ``force=True``, which it must pass to its runner as
+    ``skip_existing=False``. The runners keep their own presence check so that a bare
+    ``run_unlearn`` call stays resumable, but that means two layers can each decide to skip --
+    and when the CLI has already decided a run *must* happen, the runner has to be told so.
+    ``--force`` was once wired into only the outer layer; every forced run then "completed" in
+    0.0 s.
+
     ``hparams_sha`` is the hash of the configuration this item *would* run with. A run_id names
     what is computed, not how, so a method fix reuses the same id -- and a checkpoint under that
     id is only "already done" if it was produced by the same configuration. Items that do not
@@ -73,10 +80,10 @@ def _base_items(ctx: Context) -> list[WorkItem]:
                 WorkItem(
                     task.run_id,
                     "base",
-                    lambda t=task: run_task(
+                    lambda t=task, force=False: run_task(
                         t, ctx.train_config, store=ctx.store,
                         records_dir=ctx.records_dir, device=ctx.device,
-                        eval_bundle=ctx.bundle,
+                        eval_bundle=ctx.bundle, skip_existing=not force,
                     ),
                 )
             )
@@ -96,10 +103,10 @@ def _oracle_items(ctx: Context) -> list[WorkItem]:
             items.append(
                 WorkItem(
                     task.run_id, "oracle-paired",
-                    lambda t=task, f=fidx: run_task(
+                    lambda t=task, f=fidx, force=False: run_task(
                         t, ctx.train_config, store=ctx.store,
                         records_dir=ctx.records_dir, device=ctx.device,
-                        eval_bundle=ctx.bundle, forget_indices=f,
+                        eval_bundle=ctx.bundle, forget_indices=f, skip_existing=not force,
                     ),
                 )
             )
@@ -112,10 +119,10 @@ def _oracle_items(ctx: Context) -> list[WorkItem]:
                 items.append(
                     WorkItem(
                         task.run_id, "oracle-ensemble",
-                        lambda t=task, f=fidx: run_task(
+                        lambda t=task, f=fidx, force=False: run_task(
                             t, ctx.train_config, store=ctx.store,
                             records_dir=ctx.records_dir, device=ctx.device,
-                            eval_bundle=ctx.bundle, forget_indices=f,
+                            eval_bundle=ctx.bundle, forget_indices=f, skip_existing=not force,
                         ),
                     )
                 )
@@ -132,10 +139,10 @@ def _shadow_items(ctx: Context) -> list[WorkItem]:
         items.append(
             WorkItem(
                 task.run_id, "shadow",
-                lambda t=task: run_task(
+                lambda t=task, force=False: run_task(
                     t, ctx.train_config, store=ctx.store,
                     records_dir=ctx.records_dir, device=ctx.device,
-                    eval_bundle=ctx.bundle,
+                    eval_bundle=ctx.bundle, skip_existing=not force,
                 ),
             )
         )
@@ -157,11 +164,12 @@ def _unlearn_items(ctx: Context, methods: Sequence[str] | None = None) -> list[W
                 items.append(
                     WorkItem(
                         rid, "unlearn",
-                        lambda s=spec, f=fidx, m=method, sd=seed: run_unlearn(
+                        lambda s=spec, f=fidx, m=method, sd=seed, force=False: run_unlearn(
                             method=m, spec=s, forget_indices=f, bundle=ctx.bundle,
                             seed=sd, store=ctx.store, records_dir=ctx.records_dir,
                             device=ctx.device,
                             batch_size=ctx.train_config.batch_size,
+                            skip_existing=not force,
                         ),
                         hparams_sha=sha,
                     )
@@ -286,11 +294,21 @@ def _execute(items: Iterable[WorkItem], *, dry_run: bool, store, force: bool = F
 
         print(f"[{i}/{len(items)}] {item.run_id} ...", flush=True)
         t0 = time.perf_counter()
+        must_compute = state in ("stale", "forced")
         try:
-            item.run()
+            result = item.run(force=must_compute)
         except Exception as exc:  # keep the queue moving; one bad run is not the whole session
             failed += 1
             print(f"    FAILED: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            continue
+        if must_compute and result is None:
+            # The runner's own guard declined a run this loop had already decided must happen.
+            # Counting it as done would leave a stale checkpoint in place behind a green line.
+            failed += 1
+            print(
+                f"    FAILED: runner skipped a run marked {state}; the checkpoint is unchanged",
+                file=sys.stderr, flush=True,
+            )
             continue
         print(f"    done in {time.perf_counter() - t0:.1f}s", flush=True)
 
