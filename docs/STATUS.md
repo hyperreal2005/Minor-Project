@@ -17,8 +17,8 @@ genuinely unresolved — as opposed to merely unwritten.
 | 2 — Forget sets | A | **DONE** | ✅ **Fully passes** — verified against the real RUM scores |
 | 3 — Base models & oracles | A | **DONE, EXECUTED** | ✅ 62/62 trained on Kaggle; seed-SD gate passes |
 | 4 — Unlearning methods | A, B | **DONE** | Six methods + SSD behind one interface |
-| 5 — Full-pipeline pilot | all | **240/240 RUN** | ⚠️ 64 stale (scrub fix + acct 1 pre-fix); re-run in progress |
-| 6 — Audits | B, C | **IN PROGRESS** | base + Layers 1–2 done (behavioral, privacy_population) with degeneracy guards |
+| 5 — Full-pipeline pilot | all | **COMPLETE** | ✅ 240/240 from final implementations; cross-account consistency verified |
+| 6 — Audits | B, C | **IN PROGRESS** | base + Layers 1–3 done (behavioral, privacy_population, privacy_rmia) |
 | 7 — Calibration & validity | D | not started | — |
 | 8 — Analysis | D | not started | — |
 
@@ -28,7 +28,7 @@ genuinely unresolved — as opposed to merely unwritten.
 > Plan stage 4 is "write the unlearning methods"; queue stage 4 is shadows. Read the CLI's
 > `status` output for the queue meaning.
 
-**Test suite: 340 passing** (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
+**Test suite: 357 passing** (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
 
 ---
 
@@ -799,6 +799,45 @@ run-to-run nondeterminism, against the ≤ 0.9 pp seen on other methods. Ascent 
 examples is sensitive to batch order. Not a defect; it is what the five seeds are for, but it
 means SCRUB × mem-low needs its full seed spread before any claim is made about it.
 
+## Stage 5 CLOSED — 240/240 consistent (14 Sep 2026)
+
+Final 48 re-runs done. Every checkpoint in the project now comes from the final implementation of
+its method.
+
+**The check that mattered: account 1's forced salun re-run agrees with accounts 2–3**, which
+never had the bug. Gaps between account 1's two seeds and the other three, against the spread
+across all five:
+
+| condition | acct 1 | accts 2–3 | gap | 5-seed sd |
+|---|---|---|---|---|
+| rand-500 | 0.9520 | 0.9373 | +0.0147 | 0.0090 |
+| canary-500 | 0.1360 | 0.1533 | −0.0173 | 0.0164 |
+| mem-high-3000 | 0.8323 | 0.8249 | +0.0074 | 0.0067 |
+| rand-5000 | 0.9594 | 0.9637 | −0.0043 | 0.0041 |
+
+All within ordinary seed noise for n=2 against n=3. `--force` reached the runner.
+
+**SalUn's damage now scales with |Df| the intuitive way** — retain 0.9977 at 500, 0.9764 at 5000.
+Before the fix it ran backwards (0.28 at 500, 0.97 at 5000), which was the tell.
+
+**SCRUB rand-5000 divergence gone on all five seeds**: retain 0.9986–0.9992 (was 0.55–0.83).
+
+### Two results that changed, and must not be reported from older tables
+
+**SCRUB's canary forgetting**: 0.185 ± 0.018 across five seeds at `max_steps=24`, against
+0.308–0.342 at the old 4-step schedule. SCRUB moves from worst canary forgetter to second best.
+The old number was an artefact of the size-axis confound — at |Df| = 500 the epoch-based
+schedule gave it a sixth of the ascent it got at 3000.
+
+**SCRUB × mem-low is the highest-variance cell in the study.** Five seeds, identical schedule:
+retain 0.9416 / 0.8878 / 0.9379 / 0.9618 / 0.9719 — sd **3.25 pp**, range 8.4 pp, against
+≤ 0.9 pp elsewhere. Test accuracy sd 2.33 pp, worst seed 0.8566 against an oracle of 0.9228.
+
+Not a defect: unbounded KL ascent on the *most generalizable* examples is genuinely sensitive to
+batch order, and a difficulty interaction is one of the four claimed openings. But **n = 5 gives
+a standard error of 1.45 pp here**, so no claim about SCRUB × mem-low survives without its
+interval, and the mixed-effects model must not assume homogeneous variance across cells.
+
 ## Stage 6 progress (12 Sep 2026)
 
 | module | state | decisions worth knowing |
@@ -806,7 +845,7 @@ means SCRUB × mem-low needs its full seed spread before any claim is made about
 | `audits/base.py` | done | `Degeneracy` measured once per model; `UNDEFINED` = NaN so it cannot be averaged in silently; audits are logit-consumers (shard-local) unless they declare `needs_weights` |
 | `behavioral.py` (L1) | done | emits only the four reference-requiring metrics; raw accuracies stay in Stage 5's `meta` records to avoid double-counting the family |
 | `privacy_population.py` (L2) | done | no oracle dependency by design — oracles get their AUC by passing through the same audit; dependency-free ROC-AUC (Mann–Whitney) and L-BFGS logistic attacker, 5-fold out-of-fold |
-| `privacy_rmia.py` (L3) | next | |
+| `privacy_rmia.py` (L3) | done | offline estimator throughout — see below; `needs_references` so a machine without shadows reports undefined, never a plausible 0.5 |
 | `representation.py` (L4) | | |
 | `relearning.py` (L5) | | the only `needs_weights` audit |
 | `sde.py` (L6) | | needs 3 new registry metrics — a four-person decision, see `RESEARCH_LOG.md` §7.1 |
@@ -819,6 +858,21 @@ class). That variation is label information — shared by members and non-member
 no membership signal, and the attacker lands at chance *plus sampling noise* (0.445 in the test),
 not at 0.5 exactly. The recorded value is still the true one; the wording in the docstring and
 the test assertion were tightened to say what actually happens.
+
+**RMIA uses the offline reference prior for members and non-members alike.** The online
+estimator `½(E_IN + E_OUT)` is unavailable: shadows draw from the *training* pool, so a forget
+example has ~16 IN and ~16 OUT models while a test example is OUT for all 32. Using online for
+members and offline for non-members would bake the member/non-member distinction into the
+estimator — the very bias the attack measures. `offline_a` is now in `configs/audits.yaml`,
+defaulting to the paper's CIFAR-10 value of 0.3, flagged PILOT for a sensitivity check in
+[0.2, 0.5]. `AuditContext` grew `reference_logits` / `reference_in_mask`, kept distinct from
+`oracle_logits`: oracles answer "what would a correct model look like", references answer "how
+surprising is this example in general", and conflating them would compare a model against its
+own target.
+
+**`mia_acc_rmia` splits at the median**, not at 0.5. RMIA scores are fractions that cluster low,
+so a fixed 0.5 threshold would call almost everything a non-member and report 0.5 for every model
+alike — a metric that cannot distinguish anything.
 
 **CLI now accepts `--forget a,b`** like `--methods` and `--seeds`, with a guard against substring
 matching (`"rand-500" in "rand-5000"` is `True` as a string test and would have admitted the

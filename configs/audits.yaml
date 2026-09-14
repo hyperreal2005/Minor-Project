@@ -28,6 +28,15 @@ privacy:
     # Pilot check: TPR at low FPR must be stable when references are halved to 16 (Stage 6 gate).
     stability_check_references: 16
     gamma: 2.0
+    # Offline interpolation for the reference prior:
+    #   p~(u) = 0.5 * ((1 + a) * mean_OUT[p_ref(u)] + (1 - a))
+    # The online estimator 0.5*(E_IN + E_OUT) is unavailable here and must not be half-used:
+    # shadows draw from the *training* pool, so a forget example has ~16 IN and ~16 OUT models
+    # while a test example is OUT for all 32. Applying the online form to members and the
+    # offline form to non-members would bake the member/non-member distinction into the
+    # estimator -- which is the bias the attack exists to measure. Offline for everything.
+    # PILOT: 0.3 is the paper's CIFAR-10 value; confirm AUC is not sensitive to it in [0.2, 0.5].
+    offline_a: 0.3
     # PILOT — 0.001 or 0.01, chosen once and applied everywhere. Aggregate AUC hides exactly the
     # per-example leakage this attack exists to expose, so the low-FPR point is the headline.
     tpr_at_fpr: 0.01

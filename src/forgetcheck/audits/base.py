@@ -161,6 +161,17 @@ class AuditContext:
     #: True labels per probe set, for accuracy-like and attack-like statistics.
     labels: Mapping[str, np.ndarray] = field(default_factory=dict)
 
+    #: RMIA reference (shadow) models: ``{probe_set: (n_refs, n, n_classes)}``. Distinct from
+    #: ``oracle_logits``: oracles are retrained *without a specific forget set* and answer "what
+    #: would a correct model look like"; references are trained on random halves of the data and
+    #: answer "how surprising is this example in general". Conflating them would compare a model
+    #: against its own target.
+    reference_logits: Mapping[str, np.ndarray] = field(default_factory=dict)
+    #: ``{probe_set: (n_refs, n) bool}`` — True where that reference model trained on that
+    #: example. Reconstructed from ``shadow_indices(audit_seed, idx)``, which is a pure function,
+    #: so nothing about membership has to be stored alongside the checkpoints.
+    reference_in_mask: Mapping[str, np.ndarray] = field(default_factory=dict)
+
     #: Experimental coordinates, needed for the record and not derivable from the run_id.
     forget_kind: str = "random"
     forget_size: int = 0
@@ -196,6 +207,10 @@ class AuditContext:
         arr = self.oracle_logits.get(probe_set)
         return arr is not None and len(arr) > 0
 
+    def has_references(self, probe_set: str) -> bool:
+        arr = self.reference_logits.get(probe_set)
+        return arr is not None and len(arr) > 0
+
 
 # --------------------------------------------------------------------------- interface
 
@@ -224,6 +239,11 @@ class Audit(ABC):
     #: Audits that need model weights rather than cached logits declare it too — these are the
     #: expensive ones, and the runner reports them separately.
     needs_weights: bool = False
+
+    #: Audits that need the RMIA reference ensemble. Only Layer 3 does; declaring it lets the
+    #: runner skip with a clear message on a machine that has no shadows, rather than silently
+    #: emitting a chance-level AUC that looks like a finding.
+    needs_references: bool = False
 
     def __init__(self, **cfg: Any):
         self.cfg = dict(cfg)
