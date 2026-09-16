@@ -305,9 +305,15 @@ class ArtifactStore:
         labels: Mapping[str, np.ndarray],
         *,
         forget_id: str,
-        dtype: str = "float16",
+        dtype: str = "float32",
     ) -> Path:
         """Store a model's logits and labels on each audit probe set.
+
+        float32, unlike activations. The first Kaggle audit run raised `overflow encountered in
+        cast` on the collapsed neggrad control: sixty steps of unbounded gradient ascent leave
+        logits beyond fp16's 65504, and a cache holding inf where the live run had a finite
+        number would make a re-run from cache *disagree with the run that wrote it*. Logits are
+        ~0.5 MB per model; the space is not worth a cache that can change a result.
 
         ``forget_id`` is recorded because probe sets are condition-specific: the same base model
         evaluated for two conditions has two different forget probes, and a cached output that

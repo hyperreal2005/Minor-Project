@@ -640,7 +640,10 @@ print("audits present:", sorted(present))
 if missing:
     print("!! audits with NO rows:", sorted(missing), "-- check the run log for 'skipped'")
 
-per_model = aud.groupby("run_id")["audit"].nunique()
+# Only the unlearned models are targets. Oracles and originals carry relearning-anchor rows
+# under their own ids, which is correct and not "missing audits".
+targets = aud[aud["role"] == "unlearn"]
+per_model = targets.groupby("run_id")["audit"].nunique()
 short = per_model[per_model < len(audit_names())]
 print(f"models with all {len(audit_names())} audits: {(per_model == len(audit_names())).sum()}"
       f" / {len(per_model)}")

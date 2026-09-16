@@ -71,19 +71,29 @@ def curve_auc(steps: Sequence[float], values: Sequence[float]) -> float:
     return float(np.trapezoid(values, x) / span)
 
 
-def normalized_recovery(auc_method: float, auc_oracle: float, auc_original: float) -> float:
+def normalized_recovery(
+    auc_method: float, auc_oracle: float, auc_original: float, *, min_anchor_gap: float = 0.02
+) -> float:
     """``(AUC(Mu) − AUC(Mr)) / (AUC(M0) − AUC(Mr))``.
 
-    Undefined when the two anchors coincide: if a retrain recovers as fast as the model that
-    never forgot, the condition cannot distinguish reversibility at all, and any ratio would be
-    noise divided by noise. That is a real situation here — Stage 3 measured the `mem-low-3000`
-    oracle at 0.998 forget accuracy, which leaves almost no gap between the anchors — so it is
-    reported as undefined rather than as a large number.
+    Undefined when the two anchors (nearly) coincide. If a retrain recovers the forget set as
+    fast as the model that never forgot it, the condition cannot distinguish reversibility at
+    all, and the ratio is noise divided by noise. The first Kaggle audit run showed what that
+    looks like without a guard: at `rand-500` the oracle already scores ~0.93 on its forget set
+    and both anchors relearn to ~1.0 within a few steps, the denominator was ~0.01, and the
+    collapsed control came out at **−48.9** -- a number that would have been averaged into the
+    reversibility family as if it meant something.
+
+    ``min_anchor_gap`` is the smallest anchor separation treated as real. 0.02 is provisional
+    (configs/audits.yaml); it is about three times the oracle ensemble's forget-accuracy sd at
+    the primary condition. This makes the metric defined where forgetting is *detectable* --
+    mem-high (oracle 0.56), canary (oracle ~0) -- and undefined where it is not (rand-*,
+    mem-low), which is the honest shape of the measurement, not a limitation to hide.
     """
     if not all(np.isfinite([auc_method, auc_oracle, auc_original])):
         return UNDEFINED
     denom = auc_original - auc_oracle
-    if abs(denom) < 1e-6:
+    if abs(denom) < min_anchor_gap:
         return UNDEFINED
     return float((auc_method - auc_oracle) / denom)
 
@@ -208,7 +218,8 @@ class Relearning(Audit):
             return curve_auc(c["steps"], c["forget_acc"])
 
         out[("relearn_norm", "forget")] = normalized_recovery(
-            auc, anchor_auc("oracle"), anchor_auc("original")
+            auc, anchor_auc("oracle"), anchor_auc("original"),
+            min_anchor_gap=float(ctx.config.get("min_anchor_gap", 0.02)),
         )
 
         # --- steps to recover 80% of M0's step-0 forget performance ------------------------
@@ -240,6 +251,18 @@ class Relearning(Audit):
         missing = [a for a in ("oracle", "original") if a not in ctx.relearn_curves]
         if missing:
             bits.append(f"anchors missing: {', '.join(missing)}; relearn_norm undefined")
+        elif all(k in ctx.relearn_curves for k in ("oracle", "original")):
+            gap = abs(
+                curve_auc(ctx.relearn_curves["original"]["steps"],
+                          ctx.relearn_curves["original"]["forget_acc"])
+                - curve_auc(ctx.relearn_curves["oracle"]["steps"],
+                            ctx.relearn_curves["oracle"]["forget_acc"])
+            )
+            if gap < float(ctx.config.get("min_anchor_gap", 0.02)):
+                bits.append(
+                    f"anchor gap {gap:.4f} below min_anchor_gap; oracle and original relearn "
+                    "alike here, so reversibility is not measurable at this condition"
+                )
         drop = ctx.config.get("max_utility_drop_pp")
         m = ctx.relearn_curves.get("method") or {}
         if drop is not None and "test_acc" in m:

@@ -84,6 +84,12 @@ relearning:
   t80_threshold: 0.8
   # Guard: a recovery curve obtained by wrecking the model is not evidence of retained structure.
   max_utility_drop_pp: 5.0
+  # relearn_norm is undefined when |AUC(M0) - AUC(Mr)| is below this. Where the oracle already
+  # gets the forget set right (rand-*, mem-low) both anchors relearn to ~1.0 alike and the ratio
+  # is noise over noise -- the first audit run produced -48.9 for the collapsed control there.
+  # PILOT: 0.02 is ~3x the oracle ensemble's forget-acc sd at mem-high; revisit once Stage 7
+  # has the ensemble's spread of relearn_auc itself.
+  min_anchor_gap: 0.02
 
 # Audit Layer 6 -- approved 15 Sep 2026 alongside the `independence` metrics.
 sde:

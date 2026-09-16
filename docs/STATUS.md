@@ -18,7 +18,7 @@ genuinely unresolved — as opposed to merely unwritten.
 | 3 — Base models & oracles | A | **DONE, EXECUTED** | ✅ 62/62 trained on Kaggle; seed-SD gate passes |
 | 4 — Unlearning methods | A, B | **DONE** | Six methods + SSD behind one interface |
 | 5 — Full-pipeline pilot | all | **COMPLETE** | ✅ 240/240 from final implementations; cross-account consistency verified |
-| 6 — Audits | B, C | **CODE DONE** | six layers + runner + `audit` CLI; awaits execution on the shards |
+| 6 — Audits | B, C | **RUNNING** | `rand-500` complete and clean; 7 conditions to go |
 | 7 — Calibration & validity | D | not started | — |
 | 8 — Analysis | D | not started | — |
 
@@ -1024,6 +1024,68 @@ target, anchor rows under `oracle`/`base` roles, and the outputs + activations c
 second run skips the model, `--force` redoes it.
 
 Run it with `pytest -m slow tests/test_audits_e2e.py` before any change to the runner.
+
+## First real Stage 6 output — `rand-500`, 30 models, all six audits (17 Sep 2026)
+
+Ran clean: 1150 records, 0 failures. **Measured cost**: first target 227 s (cache warm-up for 5
+oracles, 1 original, 32 shadows, relearning anchors), each first-of-its-seed target ~80 s (two
+anchor arms), everything else **45 s**. That is ~28 min per condition at |Df| = 500; larger
+forget sets will be slower in SDE and RMIA. Estimate 3–6 h for all 240 on one account, or
+1–2 h per three-condition share.
+
+### The headline result, from the very first condition
+
+Five-seed means, forget probe:
+
+| method | cka_linear | js_to_oracle | mia_auc_pop | mia_auc_rmia | relearn_norm | sde_margin |
+|---|---|---|---|---|---|---|
+| finetune | 0.927 | 0.034 | 0.564 | 0.567 | 0.879 | −0.011 |
+| l1sparse | 0.909 | 0.035 | 0.551 | 0.564 | 0.598 | −0.004 |
+| **neggrad** | **0.092** | **0.628** | **0.488** | **0.489** | −48.9 † | **+0.009** |
+| neggradplus | 0.873 | 0.091 | 0.595 | **0.413** | −5.4 † | −0.010 |
+| salun | 0.909 | 0.042 | 0.574 | **0.431** | 0.289 | +0.015 |
+| scrub | 0.938 | 0.037 | 0.548 | 0.544 | 0.789 | −0.002 |
+
+**The destroyed control passes every retrain-free audit and fails every oracle-referenced one.**
+`neggrad` — a constant predictor, test accuracy 0.10 — gets population-MIA AUC 0.488 and RMIA AUC
+0.489: chance, "no leakage", a privacy *pass*. SDE's margin is +0.009, sign "unlearned", another
+pass. Meanwhile CKA to the oracle is 0.092 and JS divergence 0.628 (the bound is ln 2 = 0.693):
+the two audits that compare against a retrain reject it outright. That is the audit-validity
+thesis in one row, and it fell out of the first condition run. The SDE prediction in
+`RESEARCH_LOG.md` §7.1 resolves as a **false pass**, with the caveat that SDE's margins are all
+within ±0.015 here — its sign is right for the wrong reason; it is not discriminating anything at
+this size. Judge SDE on the 3000/5000 conditions.
+
+**Within-family privacy disagreement appears immediately.** On `neggradplus` and `salun` the
+population attack reports mild leakage (0.595, 0.574) while RMIA reports **below chance** (0.413,
+0.431) — forget examples look *less* member-like than random test examples, the per-example
+signature of over-forgetting, invisible to a single population threshold. The interpretation
+waits on the oracles' own RMIA values (Stage 7), but the disagreement is exactly what the
+`privacy_weak` / `privacy_strong` split was built to expose.
+
+### † `relearn_norm` was ill-conditioned here, and the guard was too loose
+
+−48.9 and −5.4 are not measurements. At `rand-500` the oracle already scores ~0.93 on its forget
+set, both anchors relearn to ~1.0 within a few steps, and the denominator |AUC(M₀) − AUC(M_r)| was
+~0.01. The guard was `1e-6`. Raised to a configurable `min_anchor_gap: 0.02` (~3× the ensemble
+forget-acc sd at mem-high), so `relearn_norm` is **defined where forgetting is detectable** —
+mem-high (oracle 0.56), canary (oracle ~0), probably mem-med (0.91) — and **undefined where it is
+not** (rand-*, mem-low), with the anchor gap written to `notes`. The raw `relearn_auc` is always
+recorded. This generalises: *every* oracle-normalised metric is ill-conditioned where M₀ ≈ M_r,
+which is the plan's `low_discriminability` flag; reversibility just makes it vivid. The paper
+should say so directly.
+
+### Two smaller defects
+
+- **fp16 overflow in the logits cache** on `neggrad` (|logit| > 65 504 after unbounded ascent).
+  The live run used float32 and was fine; a *re-run from cache* would have seen `inf` and
+  reported the model undefined — a cache that changes a result. Logits are now cached float32.
+- The notebook's check cell counted oracles/originals (which carry only relearning-anchor rows)
+  as "models missing audits". Now restricted to `role == unlearn`.
+
+The relearn_norm change alters no stored data; the 30 `rand-500` records can be re-derived from
+the caches on a laptop, or simply left — Stage 8 will recompute from `relearn_auc` and the anchor
+records if `min_anchor_gap` changes again.
 
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 
