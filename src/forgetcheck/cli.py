@@ -434,7 +434,7 @@ def cmd_audit(args) -> int:
     return run_audits(
         ctx, targets=targets, audits=names, device=args.device,
         batch_size=int(ctx.audits.get("behavior", {}).get("batch_size", 512)),
-        dry_run=args.dry_run,
+        dry_run=args.dry_run, account=args.account, of=args.of, force=args.force,
     )
 
 
@@ -509,6 +509,11 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--forget", default=None, help="restrict to one forget condition")
     a.add_argument("--methods", default=None, help="comma-separated methods")
     a.add_argument("--seeds", default=None, help="comma-separated seeds")
+    a.add_argument("--account", type=int, default=1, help="1-based account index")
+    a.add_argument("--of", type=int, default=1,
+                   help="how many accounts share the audit; conditions are split, not models")
+    a.add_argument("--force", action="store_true",
+                   help="re-audit models whose audit records already exist")
     a.set_defaults(func=cmd_audit)
 
     q.add_argument("--force", action="store_true",

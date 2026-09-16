@@ -28,7 +28,7 @@ genuinely unresolved — as opposed to merely unwritten.
 > Plan stage 4 is "write the unlearning methods"; queue stage 4 is shadows. Read the CLI's
 > `status` output for the queue meaning.
 
-**Test suite: 471 passing** (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
+**Test suite: 480 passing** (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
 
 ---
 
@@ -942,6 +942,64 @@ for every condition. `rand-500` cannot supply a third of that from its forget se
 shortfall is backfilled from retain and test rather than the probe being left at 2500 — CKA's
 value depends on the number of probes, so unequal probe sizes would make conditions
 incomparable. The resulting imbalance is a property of the condition and is visible in `n_probe`.
+
+## How Stage 6 runs — `04_audit.ipynb` (16 Sep 2026)
+
+**The team's artefacts live in ONE merged dataset** (stages 3–5, ~14 GB), not one per account.
+That changed three things after the notebook was first written:
+
+1. **Every account sees all 240 models**, so the audit is sharded — **by condition, not by
+   model**. Each condition pays a fixed setup (5 oracles, 5 originals, 32 shadows, 11 relearning
+   anchors) that a stripe over models would make every account pay for every condition. Whole
+   conditions go to one account each: 3/3/2 across three accounts, i.e. 90/90/60 models.
+   `forgetcheck audit --account K --of 3`; `--of 1` audits everything on one account.
+2. **Artifacts are frozen.** Stage 6 emits records only, and the upload cell sends *just
+   results/* — a few MB, symlinks dereferenced — to a separate small dataset,
+   `forgetcheck-records`. The 14 GB is never uploaded again. Because `kaggle datasets version`
+   is a full snapshot, the setup cell restores the previous records version first, so each upload
+   contains everything so far; accounts upload one after another.
+3. **Resumable.** A model whose `--audit` shard already exists is skipped; `--force` redoes it.
+   The notebook text had claimed this before it was implemented.
+
+The setup cell's `_restore_all` links every attached `artifacts/` and `results/` into the store
+by symlink — `/kaggle/input` is read-only on another filesystem, so hard links are impossible and
+a 14 GB copy would blow the 19.5 GB working quota. The old `_restore` took only the first match.
+
+**Two runner gaps closed while writing the notebook.** `audit_one` never built the relearning
+arms, so Layer 5 would have returned nothing; all four arms now go through one shared path, with
+oracle/original anchors cached per (condition, seed). And a missing oracle or shadow set was
+skipped silently; it now prints `skipped: <audit> (no ... in this store)` per model.
+
+**Cost, unmeasured**: ~2 h per three-condition share on a T4, dominated by relearning. Run
+`--forget rand-500` first for a real number.
+
+## Stage 6 does produce artefacts — a correction (16 Sep 2026)
+
+I described the artefacts as "frozen" after Stage 5. That was overstated. **Checkpoints** are
+frozen: Stage 6 trains nothing that is kept (the relearning arms are discarded after their
+curves are read). But the runner computed two things per model and threw them away, which was a
+deviation from the plan, not a decision:
+
+- **`artifacts/outputs/`** — each model's logits on the audit probe sets (~0.4 MB, fp16), with
+  the condition stored alongside and checked on load, since probe sets are condition-specific.
+- **`artifacts/activations/`** — GAP-pooled activations on the mixed probe (~6 MB, fp16), through
+  the `save_activations` API the plan already provided for exactly this.
+
+With both cached (~2 GB for 240 unlearn + 40 oracle models), **every audit except relearning can
+be re-run on a laptop in seconds** — a changed kernel bandwidth, histogram binning or aggregation
+no longer costs a GPU session. The runner reads the cache before evaluating, so a resumed session
+also skips the forward passes. Base models and shadows serve all eight conditions with different
+probes and are recomputed per condition rather than cached under a key that could not say which
+condition they were for.
+
+**Relearning anchors are now recorded.** The oracle and original arms' curve AUCs are written as
+`relearn_auc` records under their own run_ids, once per (condition, seed). Without them Stage 7
+could not verify the gate the layer depends on (original ≈ 1, oracle ≈ 0) — the runner had been
+computing the anchors and recording only the method arm.
+
+The Stage 6 upload is therefore `results/` + `artifacts/outputs/` + `artifacts/activations/`,
+~2 GB, to a separate `forgetcheck-stage6` dataset. The 14 GB checkpoint dataset is never
+re-uploaded.
 
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 

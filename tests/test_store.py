@@ -220,3 +220,59 @@ class TestStaleHyperparameters:
         assert v2["impl_version"] == 2
         assert {k: v for k, v in v2.items() if k != "impl_version"} == v1
         assert config_sha(v1) != config_sha(v2)
+
+
+class TestOutputsCache:
+    """Stage 6's second artefact class: per-model logits on the audit probes.
+
+    With these and the GAP activations cached, every audit but relearning re-runs on a laptop in
+    seconds. A cache hit for the wrong condition would be worse than a miss, so the condition is
+    stored with the outputs and checked on load.
+    """
+
+    RID = "c10r18__unlearn__rand-500__salun__train1"
+
+    def _store(self, tmp_path):
+        from forgetcheck.registry import ArtifactStore
+
+        return ArtifactStore(tmp_path)
+
+    def test_round_trip(self, tmp_path):
+        import numpy as np
+
+        st = self._store(tmp_path)
+        rng = np.random.default_rng(0)
+        logits = {"forget": rng.normal(size=(50, 10)), "test": rng.normal(size=(80, 10))}
+        labels = {"forget": np.arange(50) % 10, "test": np.arange(80) % 10}
+        st.save_outputs(self.RID, logits, labels, forget_id="rand-500")
+        assert st.has_outputs(self.RID)
+        got_l, got_y = st.load_outputs(self.RID, forget_id="rand-500")
+        assert set(got_l) == {"forget", "test"}
+        np.testing.assert_allclose(got_l["forget"], logits["forget"], rtol=1e-2)  # fp16
+        np.testing.assert_array_equal(got_y["test"], labels["test"])
+
+    def test_the_wrong_condition_is_refused_not_served(self, tmp_path):
+        import numpy as np
+        import pytest
+
+        from forgetcheck.registry import StoreError
+
+        st = self._store(tmp_path)
+        st.save_outputs(self.RID, {"forget": np.zeros((5, 10))}, {}, forget_id="rand-500")
+        with pytest.raises(StoreError, match="cached outputs are for condition"):
+            st.load_outputs(self.RID, forget_id="rand-5000")
+
+    def test_empty_outputs_are_refused(self, tmp_path):
+        import pytest
+
+        from forgetcheck.registry import StoreError
+
+        with pytest.raises(StoreError, match="empty output set"):
+            self._store(tmp_path).save_outputs(self.RID, {}, {}, forget_id="rand-500")
+
+    def test_usage_counts_the_new_kind(self, tmp_path):
+        import numpy as np
+
+        st = self._store(tmp_path)
+        st.save_outputs(self.RID, {"forget": np.zeros((5, 10))}, {}, forget_id="rand-500")
+        assert st.usage()["outputs"][0] == 1

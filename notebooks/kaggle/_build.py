@@ -107,6 +107,43 @@ def _restore(name, dest):
     print(f"{name}: copied from {found[0]}")
     return True
 
+def _restore_all(name, dest):
+    # Merge EVERY directory called `name` under /kaggle/input into `dest`, by symlink.
+    #
+    # `_restore` above takes the first match, which is right for stages 3-5: each account
+    # needs one previous dataset. Stage 6 is different -- an account needs its own Stage 5
+    # shard, the Stage 3 oracles and originals, and the Stage 4 shadows, which live in three
+    # datasets. Only a merge gives the audit runner all of them under one store root.
+    #
+    # Symlinks, not copies: /kaggle/input is a read-only mount on a different filesystem, so
+    # hard links are impossible and copies would move ~8 GB into the 19.5 GB working quota
+    # for nothing. torch.load and Path.is_file() follow symlinks transparently. First match
+    # wins for a file present in several datasets (the same run computed once; the pilot's
+    # duplicate scrub runs are the only such case), and the count is printed.
+    #
+    # (Comments, not a docstring: this function lives inside a triple-quoted notebook
+    # template, and a nested triple quote ends the template early.)
+    dest = Path(dest)
+    found = sorted(Path("/kaggle/input").glob(f"**/{name}"))
+    found = [f for f in found if f.is_dir()]
+    if not found:
+        return False
+    linked = dup = 0
+    for src_root in found:
+        for src in src_root.rglob("*"):
+            if not src.is_file():
+                continue
+            target = dest / src.relative_to(src_root)
+            if target.exists() or target.is_symlink():
+                dup += 1
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.symlink(src, target)
+            linked += 1
+    print(f"{name}: linked {linked} files from {len(found)} dataset(s)"
+          + (f", {dup} already present" if dup else ""))
+    return True
+
 # Restore CIFAR-10 by locating its *contents*, not its folder name.
 #
 # Kaggle does not necessarily preserve the directory that was uploaded: the batches may end up
@@ -543,6 +580,172 @@ if len(u):
 """
 
 
+SETUP_AUDIT = SETUP.replace(
+    'for _name in ("artifacts", "results"):\n    if not _restore(_name, REPO_DIR / _name):',
+    'for _name in ("artifacts", "results"):\n    if not _restore_all(_name, REPO_DIR / _name):',
+)
+assert SETUP_AUDIT != SETUP, "the restore loop in SETUP changed shape; update SETUP_AUDIT"
+
+INSPECT_AUDIT = """\
+from forgetcheck.registry import read_records
+import pandas as pd
+
+df = read_records("results/records")
+aud = df[df["audit"] != "meta"]
+print(f"{len(aud)} audit rows across {aud['run_id'].nunique()} models, "
+      f"{aud['audit'].nunique()} audits\\n")
+
+print("rows per audit / metric:")
+print(aud.groupby(["audit", "metric"]).size().to_string(), "\\n")
+
+undefined = aud[aud["metric"] == "audit_undefined"]
+if len(undefined):
+    print(f"{len(undefined)} undefined values (expected on the collapsed neggrad control):")
+    print(undefined.groupby(["audit", "probe_set"]).size().to_string(), "\\n")
+
+# One headline per family, forget-set probe, averaged over seeds within method x condition.
+head = ["js_to_oracle", "mia_auc_pop", "mia_auc_rmia", "cka_linear", "relearn_norm", "sde_margin"]
+sub = aud[aud["metric"].isin(head) & aud["probe_set"].isin(["forget", "layer4"])]
+wide = sub.pivot_table(index=["forget_id", "method"], columns="metric", values="value")
+wide.round(3)
+"""
+
+LOOK_AUDIT = """\
+### What to look for
+
+**Every model should have rows from every audit.** The counts table lists six audits; if one is
+missing, the reference it needs was not attached -- the run log says which
+(`no oracle ensemble in this store` / `no shadow models in this store`) and the fix is to attach
+the Stage 3 and Stage 4 artifact datasets, not to re-run.
+
+**`neggrad` rows will include `audit_undefined`.** That is the destroyed control doing its job:
+a constant predictor has no per-example signal, so CKA and parts of the privacy attacks are
+genuinely undefined. The row records that fact. Do not "fix" it.
+
+**`relearn_norm` on the `original` anchor is not in this table** -- the anchors are computed but
+only the method arm is recorded. The protocol check (original ~1, oracle ~0, randinit well below
+0) is Stage 7's job and reads the same curves.
+
+**Disagreement is the result.** A method that scores well on `js_to_oracle` and badly on
+`mia_auc_rmia`, or well on `cka_linear` and badly on `relearn_norm`, is not an error in either
+audit. It is the finding the project exists to produce. Look for it rather than past it.
+"""
+
+CHECK_AUDIT = """\
+from forgetcheck.audits import audit_names
+
+present = set(aud["audit"].unique())
+missing = set(audit_names()) - present
+print("audits present:", sorted(present))
+if missing:
+    print("!! audits with NO rows:", sorted(missing), "-- check the run log for 'skipped'")
+
+per_model = aud.groupby("run_id")["audit"].nunique()
+short = per_model[per_model < len(audit_names())]
+print(f"models with all {len(audit_names())} audits: {(per_model == len(audit_names())).sum()}"
+      f" / {len(per_model)}")
+if len(short):
+    print("!! models missing audits:", len(short), "-- e.g.", short.index[0])
+
+if "audit_undefined" in aud["metric"].values:
+    who = aud[aud["metric"] == "audit_undefined"]["method"].value_counts()
+    print("undefined values by method:", who.to_dict(),
+          "<-- expected: neggrad; unexpected: anything else")
+"""
+
+PUSH_AUDIT = """\
+# --- push Stage 6's outputs -----------------------------------------------------------------
+# Stage 6 writes three things, none of them checkpoints:
+#   results/                -- the audit records (a few MB)
+#   artifacts/outputs/      -- each model's logits on the probe sets (~0.4 MB each)
+#   artifacts/activations/  -- GAP-pooled activations, fp16 (~6 MB each)
+# The checkpoints (14 GB) are frozen after Stage 5 and never uploaded again. These three go to
+# a SEPARATE dataset, ~2 GB at most, and with them every audit except relearning can be re-run
+# on a laptop without a GPU -- a changed bandwidth or binning costs seconds, not hours.
+#
+# Copied with symlinks dereferenced (copytree's default): restored files are symlinks into
+# /kaggle/input, and a zip of symlinks would upload pointers, not data.
+#
+# `kaggle datasets version` is a full snapshot, so each upload must contain everything so far
+# -- which it does, because the setup cell restored the previous version first. Run the three
+# accounts' uploads one after another, each attaching the latest version.
+import json, shutil
+from pathlib import Path
+
+OUT = Path("/kaggle/working/to_upload")
+if OUT.exists():
+    shutil.rmtree(OUT)
+OUT.mkdir(parents=True)
+shutil.copytree(REPO_DIR / "results", OUT / "results", symlinks=False)
+for kind in ("outputs", "activations"):
+    src = REPO_DIR / "artifacts" / kind
+    if src.is_dir():
+        shutil.copytree(src, OUT / "artifacts" / kind, symlinks=False)
+shards = sorted((OUT / "results").rglob("*--audit.parquet"))
+n_out = sum(1 for p in OUT.rglob("*.npz"))
+mb = sum(p.stat().st_size for p in OUT.rglob("*") if p.is_file()) / 1e6
+print(f"staged {len(shards)} audit shards, {n_out} cached output files, {mb:.0f} MB")
+if not shards:
+    raise SystemExit("no audit records to upload; did the audit cell run?")
+
+(OUT / "dataset-metadata.json").write_text(json.dumps({
+    "title": "forgetcheck-stage6",
+    "id": "YOUR-KAGGLE-USERNAME/forgetcheck-stage6",   # <-- records + cached outputs, ~2 GB
+    "licenses": [{"name": "CC0-1.0"}],
+}, indent=2))
+# First time:   !kaggle datasets create  -p /kaggle/working/to_upload --dir-mode zip
+# Afterwards:   !kaggle datasets version -p /kaggle/working/to_upload -m "stage 6 account K" --dir-mode zip
+"""
+
+
+def nb_audit() -> dict:
+    header = (
+        "# 04 - Run the audits\n\n"
+        "Stage 6: the six audit layers over the 240 unlearned models. **Attach two datasets**: "
+        "CIFAR-10 and the merged artifacts dataset (stages 3-5 in one place, ~14 GB). The setup "
+        "cell links it into the store by symlink -- nothing is copied, and the working quota "
+        "stays free.\n\n"
+        "**Set `ACCOUNT` and `OF` below.** With every checkpoint in one dataset every account "
+        "sees all 240 models, so the work is split -- by *condition*, not by model, because each "
+        "condition pays a setup cost (5 oracles, 5 originals, 32 shadows, 11 relearning anchors) "
+        "that should be paid once. Three accounts get 3/3/2 conditions. `OF = 1` audits "
+        "everything on one account.\n\n"
+        "**Artifacts are frozen from here on.** Stage 6 produces records only -- a few MB of "
+        "Parquet -- and the upload cell sends *just those* to a small separate dataset, "
+        "`forgetcheck-records`. The 14 GB is never uploaded again. If a previous audit session "
+        "already versioned that dataset, attach it too: its records are restored, and models "
+        "already audited are skipped.\n\n"
+        "Rough cost: ~2 hours per three-condition share on a T4, dominated by relearning. To get "
+        "a real number first, add `--forget rand-500` to both audit cells.\n"
+    )
+    config = (
+        "ACCOUNT = 1     # <-- this account's number, 1-based\n"
+        "OF      = 3     # <-- how many accounts share the audit (1 takes everything)\n\n"
+        'DEVICE = "cuda" if __import__("torch").cuda.is_available() else "cpu"\n'
+        'print(f"account {ACCOUNT} of {OF}, device {DEVICE}")\n'
+    )
+    return notebook([
+        md(header),
+        code(INSTALL),
+        code(SETUP_AUDIT),
+        code(config),
+        md("## What is in the store\n\nEvery stage should read complete; stale would mean a "
+           "checkpoint from a superseded method configuration was attached."),
+        code("!{CLI} --root . status\n"),
+        md("## What this account will audit"),
+        code("!{CLI} --root . --dry-run audit --account {ACCOUNT} --of {OF}\n"),
+        md("## Run it\n\nOne line per model. `skipped:` on a line means a reference was "
+           "missing for that audit -- see the note at the end of each condition. Models whose "
+           "audit records already exist are skipped, so a dead session resumes here."),
+        code("!{CLI} --root . --device {DEVICE} audit --account {ACCOUNT} --of {OF}\n"),
+        md("## Inspect what came out"),
+        code(INSPECT_AUDIT),
+        md(LOOK_AUDIT),
+        code(CHECK_AUDIT),
+        code(PUSH_AUDIT),
+    ])
+
+
 def main() -> None:
     notebooks = {
         "00_verify_setup.ipynb": nb_verify(),
@@ -568,6 +771,7 @@ def main() -> None:
             "fails loudly rather than unlearning from a fresh initialisation.",
             LOOK_UNLEARN, CHECK_UNLEARN,
         ),
+        "04_audit.ipynb": nb_audit(),
     }
     for name, nb in notebooks.items():
         path = HERE / name

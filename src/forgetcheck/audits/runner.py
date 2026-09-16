@@ -30,7 +30,10 @@ from ..registry import make_record, parse_run_id, run_id, write_records
 from .base import REGISTRY, AuditContext, get_audit
 from .probes import ProbeSpec, build_probes
 
-__all__ = ["AuditTarget", "available_targets", "audit_one", "run_audits", "ModelOutputs"]
+__all__ = [
+    "AuditTarget", "available_targets", "audit_one", "run_audits", "ModelOutputs",
+    "shard_conditions", "already_audited",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,15 +151,193 @@ class _ConditionCache:
         self._originals: dict[int, ModelOutputs] = {}
         self._refs: dict[str, np.ndarray] | None = None
         self._ref_mask: dict[str, np.ndarray] | None = None
+        self._relearn_anchors: dict[int, dict[str, dict[str, np.ndarray]]] = {}
+        self._randinit_curve: dict[str, np.ndarray] | None = None
+        self.missing: list[str] = []  # reference checkpoints this store does not hold
 
-    def _eval(self, rid, *, with_activations=False) -> ModelOutputs | None:
+    def _eval(self, rid, *, with_activations=False, cache: bool = False) -> ModelOutputs | None:
+        """Evaluate a reference model, reading the on-disk cache when ``cache`` is set.
+
+        Only models that belong to exactly one condition are cacheable by run_id -- unlearn
+        models and paired oracles. Base models and shadows serve every condition with different
+        forget/retain probes, so their outputs are recomputed per condition (a few minutes) rather
+        than stored under a key that could not say which condition they were for.
+        """
+        if cache and self.ctx.store.has_outputs(rid):
+            got = self._from_cache(rid, with_activations=with_activations)
+            if got is not None:
+                return got
         if not self.ctx.store.has_checkpoint(rid):
+            self.missing.append(rid)
             return None
         state, _ = self.ctx.store.load_checkpoint(rid)
-        return evaluate_model(
+        out = evaluate_model(
             state, bundle=self.ctx.bundle, probes=self.probes, layers=self.layers,
             device=self.device, batch_size=self.batch_size, with_activations=with_activations,
         )
+        if cache:
+            self._to_cache(rid, out)
+        return out
+
+    def _from_cache(self, rid, *, with_activations) -> ModelOutputs | None:
+        from ..registry.store import StoreError
+
+        try:
+            logits, labels = self.ctx.store.load_outputs(rid, forget_id=self.forget_id)
+            acts = {}
+            if with_activations:
+                if not self.ctx.store.has_activations(rid):
+                    return None
+                acts, _ = self.ctx.store.load_activations(rid)
+            return ModelOutputs(logits=logits, labels=labels, activations=acts)
+        except StoreError:
+            return None  # wrong condition or corrupt file: recompute rather than trust
+
+    def _to_cache(self, rid, out: ModelOutputs) -> None:
+        self.ctx.store.save_outputs(rid, out.logits, out.labels, forget_id=self.forget_id)
+        if out.activations:
+            probe_ids = np.concatenate([self.probes.mixed_train, self.probes.mixed_test])
+            self.ctx.store.save_activations(rid, out.activations, probe_ids=probe_ids)
+
+    # -- relearning --------------------------------------------------------------------------
+
+    def relearn_arm(self, state, *, seed: int) -> dict[str, np.ndarray]:
+        """One relearning curve. Every arm goes through here with the same batches and seed --
+        that shared path is the guarantee that the protocol is identical across arms."""
+        from .relearning import relearn_curve
+
+        cfg = self.ctx.audits["relearning"]
+        return relearn_curve(
+            self._fresh_model(state), self._relearn_batches(), self._relearn_eval(),
+            eval_steps=cfg["eval_steps"], lr=float(cfg["lr"]), momentum=float(cfg["momentum"]),
+            device=self.device, seed=seed,
+        )
+
+    def _fresh_model(self, state):
+        from ..models.resnet import make_resnet18
+
+        m = make_resnet18(num_classes=self.ctx.bundle.num_classes)
+        if state is not None:
+            m.load_state_dict(state)
+        return m
+
+    def _relearn_batches(self):
+        """The reintroduction subset, materialised once so every arm sees identical batches."""
+        if not hasattr(self, "_batches"):
+            from ..data.cifar import make_loader
+            from .probes import probe_seed
+
+            cfg = self.ctx.audits["relearning"]
+            rng = np.random.default_rng(probe_seed(self.forget_id, base=1))
+            k = min(int(cfg["reintroduction_size"]), self.probes.forget.size)
+            subset = np.sort(rng.choice(self.probes.forget, k, replace=False))
+            # Unaugmented and unshuffled: the batch *order* is part of the protocol.
+            loader = make_loader(
+                self.ctx.bundle, subset, train=False, batch_size=int(cfg["batch_size"]),
+                split="train",
+            )
+            self._batches = [(x, y) for x, y, _ in loader]
+        return self._batches
+
+    def _relearn_eval(self):
+        """Forget / retain / test accuracy on fixed probes, for the curve checkpoints.
+
+        Retain and test are capped at 1000 here -- eight evaluations per arm, four arms per
+        target -- while the forget set is always evaluated in full, because forget accuracy is
+        the curve.
+        """
+        if not hasattr(self, "_eval_loaders"):
+            from ..data.cifar import make_loader
+
+            b = self.ctx.bundle
+            self._eval_loaders = {
+                "forget": make_loader(b, self.probes.forget, train=False, batch_size=512),
+                "retain": make_loader(b, self.probes.retain[:1000], train=False, batch_size=512),
+                "test": make_loader(b, self.probes.test[:1000], train=False, batch_size=512,
+                                    split="test"),
+            }
+
+        def evaluate(model) -> dict[str, float]:
+            from ..evaluation import predict
+
+            out = {}
+            for name, loader in self._eval_loaders.items():
+                p = predict(model, loader, device=self.device)
+                out[f"{name}_acc"] = float((p.predicted == p.labels).mean())
+            return out
+
+        return evaluate
+
+    def anchor_records(self, seed: int) -> list:
+        """The oracle and original arms' own curve AUCs, as records under their own run_ids.
+
+        Stage 6's gate for relearning is that the original arm normalises to ~1 and the oracle
+        arm to ~0. That check needs the anchors' AUCs, and a runner that only recorded the method
+        arm would leave Stage 7 unable to verify the protocol it depends on. Written once per
+        (condition, seed) -- the first target with that seed carries them, later ones skip.
+        """
+        from ..unlearn import base_run_id_for
+        from .relearning import curve_auc
+
+        if getattr(self, "_anchor_written", None) is None:
+            self._anchor_written = set()
+        if seed in self._anchor_written:
+            return []
+        self._anchor_written.add(seed)
+
+        spec = self.ctx.spec(self.forget_id)
+        arms = self.relearn_anchors(seed)
+        ids = {
+            "oracle": run_id(role="oracle", forget=self.forget_id, seed=seed, seed_kind="train"),
+            "original": base_run_id_for(spec, seed),
+        }
+        out = []
+        for arm, rid in ids.items():
+            curve = arms.get(arm)
+            if not curve:
+                continue
+            auc = curve_auc(curve["steps"], curve["forget_acc"])
+            if not np.isfinite(auc):
+                continue
+            fields = spec.as_record_fields()
+            fields["forget_size"] = int(self.probes.forget.size)
+            out.append(make_record(
+                run_id=rid, audit="relearning", metric="relearn_auc", probe_set="forget",
+                value=float(auc), n_probe=int(self.probes.forget.size),
+                audit_seed=int(self.ctx.seeds.get("audit", 0)),
+                notes=f"relearning anchor arm '{arm}' for condition {self.forget_id}",
+                **fields,
+            ))
+        return out
+
+    def relearn_anchors(self, seed: int) -> dict[str, dict[str, np.ndarray]]:
+        """The oracle, original and random-init arms for one (condition, train seed).
+
+        Cached per seed, not per target: a condition's ~30 targets share five seeds, so the
+        anchors are computed five times rather than thirty. The random-init arm is a per-condition
+        protocol check (configs/audits.yaml `randinit_sanity_check`) and is computed once.
+        """
+        if seed not in self._relearn_anchors:
+            from ..unlearn import base_run_id_for
+
+            arms: dict[str, dict[str, np.ndarray]] = {}
+            spec = self.ctx.spec(self.forget_id)
+            pairs = (
+                ("oracle", run_id(role="oracle", forget=self.forget_id, seed=seed, seed_kind="train")),
+                ("original", base_run_id_for(spec, seed)),
+            )
+            for arm, rid in pairs:
+                if self.ctx.store.has_checkpoint(rid):
+                    state, _ = self.ctx.store.load_checkpoint(rid)
+                    arms[arm] = self.relearn_arm(state, seed=seed)
+                else:
+                    self.missing.append(rid)
+            if self.ctx.audits["relearning"].get("randinit_sanity_check", True):
+                if self._randinit_curve is None:
+                    self._randinit_curve = self.relearn_arm(None, seed=0)
+                arms["randinit"] = self._randinit_curve
+            self._relearn_anchors[seed] = arms
+        return self._relearn_anchors[seed]
 
     def oracles(self) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
         if self._oracles is None:
@@ -164,7 +345,7 @@ class _ConditionCache:
             acts: dict[str, list[np.ndarray]] = {}
             for seed in self.ctx.base["oracles"]["paired_seeds"]:
                 rid = run_id(role="oracle", forget=self.forget_id, seed=seed, seed_kind="train")
-                got = self._eval(rid, with_activations=True)
+                got = self._eval(rid, with_activations=True, cache=True)
                 if got is None:
                     continue
                 for k, v in got.logits.items():
@@ -234,22 +415,30 @@ def audit_one(
 
     needs_acts = any(get_audit(a).name == "representation" for a in audits)
     state, meta = ctxobj.store.load_checkpoint(target.run_id)
-    t0 = time.perf_counter()
-    outputs = evaluate_model(
-        state, bundle=ctxobj.bundle, probes=probes, layers=audit_cfg["representation"]["layers"],
-        device=device, batch_size=batch_size, with_activations=needs_acts,
-    )
+    outputs = cache._eval(target.run_id, with_activations=needs_acts, cache=True)
 
     oracle_logits, oracle_acts = cache.oracles()
     original = cache.original(target.seed)
     refs, ref_mask = cache.references()
 
+    relearn_curves: dict[str, dict[str, np.ndarray]] = {}
+    if "relearning" in audits:
+        relearn_curves = dict(cache.relearn_anchors(target.seed))
+        relearn_curves["method"] = cache.relearn_arm(state, seed=target.seed)
+
     records = []
+    if "relearning" in audits:
+        records += cache.anchor_records(target.seed)
+    skipped: list[str] = []
     for name in audits:
         audit = get_audit(name)
+        # A missing reference is reported, never imputed: an oracle-referenced audit run against
+        # no oracle would emit a plausible number that means nothing.
         if audit.needs_oracles and not oracle_logits:
-            continue  # reported by the caller; never imputed
+            skipped.append(f"{name} (no oracle ensemble in this store)")
+            continue
         if audit.needs_references and not refs:
+            skipped.append(f"{name} (no shadow models in this store)")
             continue
 
         ctx = AuditContext(
@@ -262,6 +451,7 @@ def audit_one(
             oracle_activations=oracle_acts,
             reference_logits=refs,
             reference_in_mask=ref_mask,
+            relearn_curves=relearn_curves,
             forget_kind=spec.kind,
             forget_size=int(probes.forget.size),
             forget_stratum=spec.stratum,
@@ -308,7 +498,8 @@ def audit_one(
                     value=1.0, n_probe=n_probe, notes=why, **common,
                 )
             )
-    _ = time.perf_counter() - t0
+    if skipped:
+        print("\n      skipped: " + "; ".join(skipped), end="", flush=True)
     return records
 
 
@@ -341,6 +532,33 @@ def _n_probe(probe: str, probes: ProbeSpec, outputs: ModelOutputs) -> int:
 # --------------------------------------------------------------------------- the queue
 
 
+def shard_conditions(conditions: Sequence[str], *, account: int, of: int) -> list[str]:
+    """This account's share of the conditions.
+
+    Sharded by *condition*, not by model, deliberately. Every condition carries a fixed setup
+    cost -- five oracles, five originals, 32 shadows and eleven relearning anchors evaluated
+    before the first target -- and a stripe over models would make every account pay that for
+    every condition. Splitting whole conditions means each cache is built exactly once
+    project-wide. With eight conditions and three accounts the split is 3/3/2, i.e. 90/90/60
+    models; uneven, and cheaper than the alternative.
+    """
+    if not 1 <= account <= of:
+        raise ValueError(f"account must be in 1..{of}, got {account}")
+    ordered = sorted(conditions)
+    return ordered[account - 1 :: of]
+
+
+def already_audited(ctxobj, run_id_: str) -> bool:
+    """True if this model's audit shard is already in the records directory.
+
+    The audit stage is resumable the same way the training stages are: a session that dies
+    on model 40 of 90 costs the one in flight, and re-running the same command picks up there.
+    """
+    from ..registry.records import shard_path
+
+    return shard_path(ctxobj.records_dir, run_id_, suffix="audit").is_file()
+
+
 def run_audits(
     ctxobj,
     *,
@@ -349,8 +567,11 @@ def run_audits(
     device: str = "cpu",
     batch_size: int = 512,
     dry_run: bool = False,
+    account: int = 1,
+    of: int = 1,
+    force: bool = False,
 ) -> int:
-    """Audit every target this machine holds, grouped by condition so caches are reused."""
+    """Audit this account's share of the conditions, grouped so caches are reused."""
     audits = tuple(audits or sorted(REGISTRY))
     targets = list(targets if targets is not None else available_targets(ctxobj.store))
     if not targets:
@@ -360,9 +581,19 @@ def run_audits(
     by_condition: dict[str, list[AuditTarget]] = {}
     for t in targets:
         by_condition.setdefault(t.forget_id, []).append(t)
+    mine = shard_conditions(list(by_condition), account=account, of=of)
+    print(f"account {account} of {of}: conditions {mine}")
 
-    written = failed = 0
-    for forget_id, group in sorted(by_condition.items()):
+    written = failed = skipped_done = 0
+    for forget_id in mine:
+        group = by_condition[forget_id]
+        if not force:
+            todo = [t for t in group if not already_audited(ctxobj, t.run_id)]
+            skipped_done += len(group) - len(todo)
+            group = todo
+        if not group:
+            print(f"\n{forget_id}: all targets already audited", flush=True)
+            continue
         probes = build_probes(
             forget_indices=ctxobj.forget_indices(forget_id),
             n_train=ctxobj.bundle.n_train,
@@ -399,5 +630,12 @@ def run_audits(
             written += len(records)
             print(f" {len(records)} records in {time.perf_counter() - t0:.1f}s", flush=True)
 
-    print(f"\nwrote {written} records, {failed} targets failed")
+        if cache.missing:
+            uniq = sorted(set(cache.missing))
+            print(f"  {forget_id}: {len(uniq)} reference checkpoint(s) not in this store, "
+                  f"e.g. {uniq[0]}. Oracle/shadow-dependent audits were skipped above; attach "
+                  f"the Stage 3 and Stage 4 artifact datasets and re-run.", flush=True)
+
+    done_note = f", {skipped_done} already audited" if skipped_done else ""
+    print(f"\nwrote {written} records, {failed} targets failed{done_note}")
     return 1 if failed else 0

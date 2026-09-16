@@ -46,6 +46,12 @@ class StoreError(RuntimeError):
 
 CHECKPOINTS: Final = "checkpoints"
 ACTIVATIONS: Final = "activations"
+#: Per-model logits over the audit probe sets. Stage 6's second artefact class, alongside the
+#: GAP activations: with both cached, every audit except relearning can be re-run on a laptop in
+#: seconds, without a GPU and without touching a checkpoint. An audit whose *interpretation*
+#: changes -- a kernel bandwidth, a histogram binning, an aggregation -- then costs nothing to
+#: re-apply, where recomputing forward passes for 280 models costs hours.
+OUTPUTS: Final = "outputs"
 FORGET_SETS: Final = "forget_sets"
 
 
@@ -91,6 +97,12 @@ class ArtifactStore:
 
     def activations_path(self, run_id: str) -> Path:
         return self._dir(ACTIVATIONS) / f"{run_id}.npz"
+
+    def outputs_path(self, run_id: str) -> Path:
+        return self._dir(OUTPUTS) / f"{run_id}.npz"
+
+    def has_outputs(self, run_id: str) -> bool:
+        return self.outputs_path(run_id).is_file()
 
     def forget_set_path(self, forget_id: str) -> Path:
         return self._dir(FORGET_SETS) / f"{forget_id}.npz"
@@ -284,6 +296,61 @@ class ArtifactStore:
             probe_ids = z["probe_ids"] if "probe_ids" in z.files else None
         return acts, probe_ids
 
+    # -- outputs (logits over probe sets) ------------------------------------
+
+    def save_outputs(
+        self,
+        run_id: str,
+        logits: Mapping[str, np.ndarray],
+        labels: Mapping[str, np.ndarray],
+        *,
+        forget_id: str,
+        dtype: str = "float16",
+    ) -> Path:
+        """Store a model's logits and labels on each audit probe set.
+
+        ``forget_id`` is recorded because probe sets are condition-specific: the same base model
+        evaluated for two conditions has two different forget probes, and a cached output that
+        did not say which it was for would be silently wrong for the other.
+        """
+        parse_run_id(run_id)
+        if not logits:
+            raise StoreError(f"{run_id}: refusing to save an empty output set")
+        np_dtype = np.float16 if dtype == "float16" else np.float32
+        payload: dict[str, np.ndarray] = {"forget_id": np.array(forget_id)}
+        for probe, arr in logits.items():
+            a = np.asarray(arr)
+            if a.ndim != 2:
+                raise StoreError(f"{run_id}/{probe}: expected (n, n_classes), got {a.shape}")
+            payload[f"logits__{probe}"] = a.astype(np_dtype, copy=False)
+            if probe in labels:
+                payload[f"labels__{probe}"] = np.asarray(labels[probe]).astype(np.int64)
+        path = self.outputs_path(run_id)
+        _atomic_savez(path, payload)
+        return path
+
+    def load_outputs(
+        self, run_id: str, *, forget_id: str | None = None
+    ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+        """Return ``({probe: logits float32}, {probe: labels})``.
+
+        Raises if ``forget_id`` is given and does not match what was stored -- a cache hit for
+        the wrong condition is worse than a miss.
+        """
+        path = self.outputs_path(run_id)
+        if not path.is_file():
+            raise StoreError(f"no outputs for {run_id!r} at {path}")
+        with np.load(path) as z:
+            stored = str(z["forget_id"]) if "forget_id" in z.files else None
+            if forget_id is not None and stored != forget_id:
+                raise StoreError(
+                    f"{run_id}: cached outputs are for condition {stored!r}, not {forget_id!r}"
+                )
+            logits = {k[len("logits__"):]: z[k].astype(np.float32)
+                      for k in z.files if k.startswith("logits__")}
+            labels = {k[len("labels__"):]: z[k] for k in z.files if k.startswith("labels__")}
+        return logits, labels
+
     # -- forget sets ---------------------------------------------------------
 
     def save_forget_set(
@@ -321,7 +388,7 @@ class ArtifactStore:
     def usage(self) -> dict[str, tuple[int, float]]:
         """``{kind: (file_count, megabytes)}`` — for keeping under the Kaggle limits."""
         out: dict[str, tuple[int, float]] = {}
-        for kind in (CHECKPOINTS, ACTIVATIONS, FORGET_SETS):
+        for kind in (CHECKPOINTS, ACTIVATIONS, OUTPUTS, FORGET_SETS):
             d = self._dir(kind)
             if not d.is_dir():
                 out[kind] = (0, 0.0)

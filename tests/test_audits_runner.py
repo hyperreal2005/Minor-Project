@@ -332,3 +332,43 @@ class TestRecordsSurviveValidation:
         with pytest.raises(RecordError, match="silently poisons"):
             validate(type(recs[0])(**{**recs[0].as_dict(), "metric": "relearn_t80",
                                       "value": float("inf")}))
+
+
+class TestConditionSharding:
+    def test_disjoint_and_complete(self):
+        from forgetcheck.audits.runner import shard_conditions
+
+        conds = ["rand-500", "rand-2500", "rand-3000", "rand-5000", "mem-low-3000",
+                 "mem-med-3000", "mem-high-3000", "canary-500"]
+        shards = [shard_conditions(conds, account=a, of=3) for a in (1, 2, 3)]
+        assert sum(len(x) for x in shards) == 8
+        assert set().union(*map(set, shards)) == set(conds)
+        assert [len(x) for x in shards] == [3, 3, 2]
+
+    def test_whole_conditions_never_split(self):
+        # A condition's cache -- oracles, originals, shadows, relearning anchors -- must be
+        # built once project-wide, so a condition belongs to exactly one account.
+        from forgetcheck.audits.runner import shard_conditions
+
+        conds = ["a", "b", "c", "d"]
+        for a in (1, 2):
+            for c in shard_conditions(conds, account=a, of=2):
+                others = [shard_conditions(conds, account=b, of=2) for b in (1, 2) if b != a]
+                assert all(c not in o for o in others)
+
+    def test_single_account_takes_everything(self):
+        from forgetcheck.audits.runner import shard_conditions
+
+        assert shard_conditions(["b", "a"], account=1, of=1) == ["a", "b"]
+
+    def test_bad_account_rejected(self):
+        from forgetcheck.audits.runner import shard_conditions
+
+        with pytest.raises(ValueError, match="account must be in"):
+            shard_conditions(["a"], account=0, of=1)
+
+    def test_cli_accepts_the_flags(self):
+        from forgetcheck.cli import build_parser
+
+        a = build_parser().parse_args(["audit", "--account", "2", "--of", "3", "--force"])
+        assert (a.account, a.of, a.force) == (2, 3, True)
