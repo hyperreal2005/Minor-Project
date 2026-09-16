@@ -28,7 +28,7 @@ genuinely unresolved — as opposed to merely unwritten.
 > Plan stage 4 is "write the unlearning methods"; queue stage 4 is shadows. Read the CLI's
 > `status` output for the queue meaning.
 
-**Test suite: 480 passing** (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
+**Test suite: 480 passing** (+3 `slow`, incl. the Stage 6 end-to-end) (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
 
 ---
 
@@ -1000,6 +1000,30 @@ computing the anchors and recording only the method arm.
 The Stage 6 upload is therefore `results/` + `artifacts/outputs/` + `artifacts/activations/`,
 ~2 GB, to a separate `forgetcheck-stage6` dataset. The 14 GB checkpoint dataset is never
 re-uploaded.
+
+## First Kaggle audit run died on glue — and the test that was missing (16 Sep 2026)
+
+`forgetcheck audit --forget rand-500` failed at `bundle.n_test`, an attribute `DataBundle` never
+had, with 480 tests green. Every audit test built its `AuditContext` by hand; none drove the
+runner through the data layer. The unit tests verified the audits and missed the glue.
+
+Added `tests/test_audits_e2e.py` (`slow`, ~50 s): a synthetic 240/120-image bundle, real
+ResNet-18 checkpoints for a target, an oracle, an original and two shadows, and the same
+`run_audits` entry point the CLI calls. It found **three** glue defects in sequence, each hidden
+behind the previous:
+
+1. `DataBundle.n_test` did not exist → added, mirroring `n_train`.
+2. `make_record(hparams_sha=...)` collided with the `hparams_sha` it derives from `hparams=` →
+   pass the sha as `hparams`.
+3. `write_records` holds one run_id per shard, and the relearning anchors are recorded under the
+   oracle's and original's ids → written as their own shards, with suffix `--relearn-anchor` so
+   Stage 7 passing an oracle through the audits (`--audit`) cannot overwrite them.
+
+The test also asserts what a Stage 6 run must leave behind: rows from all six audits for the
+target, anchor rows under `oracle`/`base` roles, and the outputs + activations caches; and that a
+second run skips the model, `--force` redoes it.
+
+Run it with `pytest -m slow tests/test_audits_e2e.py` before any change to the runner.
 
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 

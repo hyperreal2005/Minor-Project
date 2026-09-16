@@ -470,7 +470,7 @@ def audit_one(
         common = dict(
             run_id=target.run_id,
             **spec.as_record_fields(),
-            hparams_sha=meta.hparams_sha,
+            hparams=meta.hparams_sha,  # make_record derives hparams_sha from this
             checkpoint_sha=meta.sha,
             audit_seed=int(ctxobj.seeds.get("audit", 0)),
         )
@@ -626,7 +626,16 @@ def run_audits(
                 failed += 1
                 print(f" FAILED: {type(exc).__name__}: {exc}", flush=True)
                 continue
-            write_records(records, ctxobj.records_dir, suffix="audit")
+            # One shard per run_id. The target's rows go under `--audit`; the relearning
+            # anchors are recorded under the oracle's and original's own ids, and get a
+            # distinct suffix so that Stage 7 passing an oracle *through* the audits as a
+            # candidate writes `<oracle>--audit` without overwriting `<oracle>--relearn-anchor`.
+            by_id: dict[str, list] = {}
+            for r in records:
+                by_id.setdefault(r.run_id, []).append(r)
+            for rid, rows in by_id.items():
+                suffix = "audit" if rid == t.run_id else "relearn-anchor"
+                write_records(rows, ctxobj.records_dir, suffix=suffix)
             written += len(records)
             print(f" {len(records)} records in {time.perf_counter() - t0:.1f}s", flush=True)
 

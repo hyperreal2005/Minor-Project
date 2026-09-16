@@ -69,6 +69,10 @@ class DataBundle:
     def n_train(self) -> int:
         return len(self.train_y)
 
+    @property
+    def n_test(self) -> int:
+        return len(self.test_y)
+
     def all_indices(self) -> np.ndarray:
         return np.arange(self.n_train, dtype=np.int64)
 
