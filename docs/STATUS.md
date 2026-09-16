@@ -18,7 +18,7 @@ genuinely unresolved — as opposed to merely unwritten.
 | 3 — Base models & oracles | A | **DONE, EXECUTED** | ✅ 62/62 trained on Kaggle; seed-SD gate passes |
 | 4 — Unlearning methods | A, B | **DONE** | Six methods + SSD behind one interface |
 | 5 — Full-pipeline pilot | all | **COMPLETE** | ✅ 240/240 from final implementations; cross-account consistency verified |
-| 6 — Audits | B, C | **IN PROGRESS** | base + Layers 1–3 done (behavioral, privacy_population, privacy_rmia) |
+| 6 — Audits | B, C | **CODE DONE** | six layers + runner + `audit` CLI; awaits execution on the shards |
 | 7 — Calibration & validity | D | not started | — |
 | 8 — Analysis | D | not started | — |
 
@@ -28,7 +28,7 @@ genuinely unresolved — as opposed to merely unwritten.
 > Plan stage 4 is "write the unlearning methods"; queue stage 4 is shadows. Read the CLI's
 > `status` output for the queue meaning.
 
-**Test suite: 357 passing** (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
+**Test suite: 471 passing** (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
 
 ---
 
@@ -846,10 +846,12 @@ interval, and the mixed-effects model must not assume homogeneous variance acros
 | `behavioral.py` (L1) | done | emits only the four reference-requiring metrics; raw accuracies stay in Stage 5's `meta` records to avoid double-counting the family |
 | `privacy_population.py` (L2) | done | no oracle dependency by design — oracles get their AUC by passing through the same audit; dependency-free ROC-AUC (Mann–Whitney) and L-BFGS logistic attacker, 5-fold out-of-fold |
 | `privacy_rmia.py` (L3) | done | offline estimator throughout — see below; `needs_references` so a machine without shadows reports undefined, never a plausible 0.5 |
-| `representation.py` (L4) | | |
-| `relearning.py` (L5) | | the only `needs_weights` audit |
-| `sde.py` (L6) | | needs 3 new registry metrics — a four-person decision, see `RESEARCH_LOG.md` §7.1 |
-| `runner.py` | | target enumeration, logit caching, record assembly |
+| `representation.py` (L4) | done | CKA **undefined**, never 0.0, on a constant representation — 0.0 would read as "maximally dissimilar" and be averaged in as a measurement |
+| `relearning.py` (L5) | done | trainer lives here, called by the runner: the protocol must be byte-identical across all four arms |
+| `sde.py` (L6) | done | **median bandwidth, not the paper's sqrt(dim)** — see below |
+| `probes.py` | done | probe sets are pure functions of (condition, config) — no model, account or clock |
+| `runner.py` | done | one forward pass per target shared by all six audits; oracle/reference caches per condition |
+| CLI `audit` | done | `forgetcheck audit [--audits ...] [--forget ...] [--methods ...] [--seeds ...]` |
 
 **A detail the L2 tests corrected.** I had claimed the constant predictor gives *three* flat attack
 features and therefore an AUC of exactly 0.5 through ties. Wrong: confidence and entropy are
@@ -858,6 +860,34 @@ class). That variation is label information — shared by members and non-member
 no membership signal, and the attacker lands at chance *plus sampling noise* (0.445 in the test),
 not at 0.5 exactly. The recorded value is still the true one; the wording in the docstring and
 the test assertion were tightened to say what actually happens.
+
+**SDE deviates from the paper's kernel bandwidth, and this is load-bearing.** Measured on
+CIFAR-10 softmax outputs: median pairwise squared distance **0.15**, against the `sqrt(10)`
+heuristic's bandwidth of **20**. So `exp(-d²/2σ²) ≈ 1` for every pair, the Gram matrix centres to
+numerical dust, and HSIC comes out at ~1e-7. It still *ordered* subsets correctly in testing —
+but only by comparing float noise, which is not something to build a claim on. With the median
+heuristic the same subsets give ~1e-2. The paper names bandwidth as a known limitation and
+`sqrt(dim)` is reasonable for the raw features it was proposed for; model outputs live on a
+10-simplex where nothing is further apart than √2. A test now asserts the dynamic range directly.
+
+**Three metrics were added to `configs/metrics.yaml` under a new `independence` family, marked
+PROPOSED.** That file says adding a metric is a four-person decision; they are in so the module
+can be written and tested, not to bypass the decision. If the team declines Layer 6, delete the
+block and `audits/sde.py` together.
+
+**A test-fixture error worth recording, because it nearly became a false bug report.** The first
+SDE test built "in-training-like" and "out-of-training-like" subsets as two pools with
+*independent* common factors, then asserted the target should resemble the first. They were no
+more alike than either was to noise, and the test failed for a reason that had nothing to do with
+the audit. Fixed by drawing the target and the in-training reference from **one** pool. The
+lesson: a fixture for a similarity test has to encode the similarity, not merely the category
+label.
+
+**Registry parity is now a test.** Every metric an audit can emit must be declared in
+`metrics.yaml`, no audit may emit nothing, and no two audits may claim the same metric name —
+the agreement analysis groups on `(metric, audit)`, so a name claimed twice would be
+double-counted in whichever family comparison it fell into. `records.validate()` would have
+caught the first of these at *write* time, i.e. after a full audit pass.
 
 **RMIA uses the offline reference prior for members and non-members alike.** The online
 estimator `½(E_IN + E_OUT)` is unavailable: shadows draw from the *training* pool, so a forget
@@ -877,6 +907,58 @@ alike — a metric that cannot distinguish anything.
 **CLI now accepts `--forget a,b`** like `--methods` and `--seeds`, with a guard against substring
 matching (`"rand-500" in "rand-5000"` is `True` as a string test and would have admitted the
 wrong condition).
+
+---
+
+## Stage 6 runner — and three defects the record-validation test caught (15 Sep 2026)
+
+SDE approved by the team; the PROPOSED markers are gone from `metrics.yaml` and `audits.yaml`.
+
+The runner is written, wired to a `forgetcheck audit` subcommand, and shard-local: it enumerates
+only the checkpoints this machine holds, runs each target's forward pass **once** for all six
+audits, and caches the oracle ensemble and 32 RMIA references per condition — otherwise the
+ensemble would be reloaded for each of ~30 targets.
+
+**A test asserting that records survive `records.validate()` found three defects, all of which
+would have surfaced only after a full audit pass had already spent its GPU hours.**
+
+1. **The `AUDITS` whitelist said `privacy_pop`; the module registers itself as
+   `privacy_population`.** Every population-attack row would have been rejected at write time.
+   `sde` was missing from the whitelist entirely. A test now asserts registry and whitelist agree.
+2. **`validate()` rejects NaN and inf — correctly — but the audits deliberately emit them.**
+   `UNDEFINED` is the honest answer for an AUC over zero-variance scores or a CKA against a
+   constant representation, and `relearn_t80` returns `inf` when a model never recovers. Dropping
+   those rows would have erased the most informative case in the study: the destroyed control is
+   *precisely* the model whose audits come back undefined. Resolved by adding a `meta` metric
+   **`audit_undefined`** — the row is written with value 1.0 and the undefined metric named in
+   `notes`, so "could not measure" stays distinguishable from "never ran" without putting a NaN
+   anywhere an aggregate could reach it.
+3. **`selection_seed` was missing on every memstratum record.** The runner hand-picked identity
+   fields instead of calling `ForgetSpec.as_record_fields()` — whose docstring says it exists "so
+   audits do not re-derive them by hand". Three of the eight conditions would have failed.
+
+**One probe-construction decision worth knowing.** The mixed CKA probe is held at exactly 3000
+for every condition. `rand-500` cannot supply a third of that from its forget set, so the
+shortfall is backfilled from retain and test rather than the probe being left at 2500 — CKA's
+value depends on the number of probes, so unequal probe sizes would make conditions
+incomparable. The resulting imbalance is a property of the condition and is visible in `n_probe`.
+
+## Outstanding from Stage 5 — one real item (14 Sep 2026)
+
+Checkpoints and records are complete and consistent. One thing is **not** settled, and it affects
+a reported metric:
+
+**`runtime_s` is confounded with which account ran the seed.** Account 2's GPU is ~20% slower
+than account 3's (finetune: 215 s vs 177 s for identical work). The stripe does not give every
+method the same account mix — finetune drew two seeds on the slow account, l1sparse one — so a
+naive cross-method efficiency comparison is partly a comparison of GPU allocations.
+
+Every account does hold all six methods, so the fix is available and cheap: **compare runtimes
+within an account, then aggregate the within-account orderings.** Do not pool raw seconds across
+accounts. Decide this before Stage 8 writes an efficiency column, not after.
+
+Also still open, unchanged: the oracle-gap denominator collapses on `mem-low-3000` (§ above), and
+SCRUB × mem-low needs its interval reported rather than its mean.
 
 ---
 

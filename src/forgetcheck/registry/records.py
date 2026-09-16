@@ -57,10 +57,14 @@ class RecordError(ValueError):
 AUDITS: Final[frozenset[str]] = frozenset(
     {
         "behavior",
-        "privacy_pop",
+        # Must match `Audit.name` exactly -- this was "privacy_pop" while the module registered
+        # itself as "privacy_population", so every population-attack row would have been
+        # rejected at write time, after the audit had already run.
+        "privacy_population",
         "privacy_rmia",
         "representation",
         "relearning",
+        "sde",
         "calibration",
         "meta",
     }

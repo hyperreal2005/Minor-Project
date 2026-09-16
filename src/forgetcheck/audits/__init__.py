@@ -20,6 +20,9 @@ from .base import (
 from .behavioral import Behavioral
 from .privacy_population import PopulationMIA
 from .privacy_rmia import RMIA
+from .relearning import Relearning
+from .representation import Representation
+from .sde import SDE
 
 __all__ = [
     "Audit",
@@ -34,4 +37,7 @@ __all__ = [
     "Behavioral",
     "PopulationMIA",
     "RMIA",
+    "Representation",
+    "Relearning",
+    "SDE",
 ]

@@ -254,6 +254,30 @@ def test_unlearning_without_its_base_model_fails_loudly(tiny_ctx):
         )
 
 
+class TestStatusIsStaleAware:
+    def test_a_stale_checkpoint_is_not_counted_as_done(self, capsys):
+        # `status` counted has_checkpoint only, so it showed 240/240 while 64 runs were from
+        # superseded configurations. A green bar over stale data is worse than no bar.
+        from forgetcheck.cli import _execute
+
+        rid = "c10r18__unlearn__rand-500__salun__train1"
+        item = WorkItem(rid, "unlearn", lambda force=False: rid, hparams_sha="new")
+
+        class Meta:
+            hparams_sha = "old"
+
+        class S:
+            def has_checkpoint(self, r):
+                return True
+
+            def load_meta(self, r):
+                return Meta()
+
+        assert item.state(S()) == "stale"
+        _execute([item], dry_run=True, store=S())
+        assert "[stale]" in capsys.readouterr().out
+
+
 class TestForceGuard:
     def test_force_without_a_filter_is_refused(self):
         # One mistyped flag must not be able to queue 240 runs of recomputation.

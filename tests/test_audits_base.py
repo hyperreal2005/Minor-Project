@@ -225,3 +225,46 @@ class TestRegistry:
 
         with pytest.raises(ValueError, match="non-empty"):
             register(Nameless)
+
+
+class TestRegistryParity:
+    """Every metric an audit can emit must be declared in configs/metrics.yaml.
+
+    `records.validate()` rejects unregistered metric names at write time, so without this the
+    failure surfaces after a GPU-hours-long audit pass rather than on a laptop in a second.
+    """
+
+    def test_every_audit_metric_is_declared(self):
+        import yaml
+
+        from forgetcheck.audits import REGISTRY
+        from forgetcheck.config import find_configs
+
+        reg = yaml.safe_load((find_configs() / "metrics.yaml").read_text(encoding="utf-8"))
+        known = {m for family in reg.values() for m in family}
+        missing = {
+            name: [m for m in cls.metrics if m not in known]
+            for name, cls in REGISTRY.items()
+            if any(m not in known for m in cls.metrics)
+        }
+        assert not missing, f"undeclared metrics: {missing}"
+
+    def test_every_audit_declares_at_least_one_metric(self):
+        from forgetcheck.audits import REGISTRY
+
+        empty = [n for n, c in REGISTRY.items() if not c.metrics]
+        assert not empty, f"audits emitting nothing: {empty}"
+
+    def test_no_two_audits_claim_the_same_metric(self):
+        # The agreement analysis groups on (metric, audit); a metric emitted by two audits would
+        # be counted twice in whichever family comparison it lands in.
+        from forgetcheck.audits import REGISTRY
+
+        seen: dict[str, str] = {}
+        clashes = []
+        for name, cls in sorted(REGISTRY.items()):
+            for m in cls.metrics:
+                if m in seen:
+                    clashes.append((m, seen[m], name))
+                seen[m] = name
+        assert not clashes, f"metrics claimed twice: {clashes}"

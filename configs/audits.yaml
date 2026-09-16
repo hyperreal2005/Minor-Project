@@ -85,6 +85,21 @@ relearning:
   # Guard: a recovery curve obtained by wrecking the model is not evidence of retained structure.
   max_utility_drop_pp: 5.0
 
+# Audit Layer 6 -- approved 15 Sep 2026 alongside the `independence` metrics.
+sde:
+  n_draws: 200          # split-half draws per subset, per the paper
+  jsd_bins: 32
+  # Kernel bandwidth. DEVIATION from the paper's sqrt(dim): on 10-class softmax outputs the
+  # median pairwise squared distance is ~0.15 against a sqrt(10) bandwidth of 20, so the kernel
+  # is ~1 for every pair and HSIC collapses to ~1e-7 of numerical dust. The median heuristic
+  # gives ~1e-2 on the same data. The paper names bandwidth as a known limitation. Replace with
+  # a number to override; it must then be identical across every model compared.
+  sigma: median
+  in_training_source: retain
+  out_of_training_source: test
+  # PILOT: the paper also names reference-set choice as a sensitivity. Check that swapping the
+  # in-training reference from retain to a held-out slice of retain does not flip verdicts.
+
 calibration:
   # Implementation plan §3.3 / master reference §15.5.
   band_oracle_seeds: [200, 201, 202, 203, 204, 205, 206, 207, 208]

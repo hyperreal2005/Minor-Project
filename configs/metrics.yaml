@@ -202,6 +202,40 @@ reversibility:
       Worst retain/test accuracy drop observed during relearning. Guard metric: a recovery
       curve obtained by wrecking the model is not evidence of retained structure.
 
+# ---------------------------------------------------------------------------------------------
+# Audit Layer 6 (SDE). Approved by the team on 15 September 2026, per the four-person rule at the
+# top of this file. Rationale and the novelty analysis that motivated it: RESEARCH_LOG.md §7.1.
+independence:
+  sde_hsic:
+    family: independence
+    direction: closer_to_oracle
+    oracle_ref: true
+    probe_sets: [forget]
+    doc: >
+      Mean split-half HSIC of the model's outputs on the forget set (Wang et al., ICLR 2026;
+      arXiv 2603.00587). Co-training induces dependence between samples, so an in-training
+      subset shows more of it than an out-of-training one. closer_to_oracle because a retrained
+      model exhibits a non-zero value too -- driving this to zero means a collapsed model, not
+      a forgotten one.
+  sde_margin:
+    family: independence
+    direction: closer_to_oracle
+    oracle_ref: true
+    probe_sets: [forget]
+    doc: >
+      JSD(target, in-training reference) - JSD(target, out-of-training reference). Positive means
+      the forget set's dependence distribution resembles never-trained data, i.e. SDE judges it
+      unlearned. Signed deliberately: whether a destroyed model reads as a false pass or a false
+      alarm is an open question this metric is meant to answer, not assume.
+  sde_verdict:
+    family: independence
+    direction: closer_to_oracle
+    oracle_ref: true
+    probe_sets: [forget]
+    doc: >
+      1.0 when sde_margin > 0 (SDE calls the subset out-of-training), else 0.0. Feeds the
+      oracle_fpr validity score: an audit that flags a genuine retrain is broken, not strict.
+
 meta:
   canary_prob:
     family: meta
@@ -218,6 +252,20 @@ meta:
     oracle_ref: true
     probe_sets: [canary]
     doc: Fraction of canaries still predicted as their assigned wrong label.
+  audit_undefined:
+    family: meta
+    direction: lower_better
+    oracle_ref: false
+    probe_sets: [all]
+    doc: >
+      1.0 for each (metric, probe_set) an audit ran on but could not define -- an AUC over
+      zero-variance scores, a CKA against a constant representation. `validate()` rejects NaN in
+      the value column, correctly: a NaN silently poisons every aggregate it reaches. But simply
+      dropping the row would erase the most informative case in the study, since the destroyed
+      control is precisely the model whose audits come back undefined. So the row is written
+      here instead, with the undefined metric named in `notes`. "audit could not measure this"
+      and "audit was never run" are then distinguishable, which is what the validity scoring
+      needs.
   runtime_s:
     family: meta
     direction: lower_better

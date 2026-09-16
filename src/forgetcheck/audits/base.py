@@ -161,6 +161,20 @@ class AuditContext:
     #: True labels per probe set, for accuracy-like and attack-like statistics.
     labels: Mapping[str, np.ndarray] = field(default_factory=dict)
 
+    #: Relearning curves, one per arm: ``{arm: {"steps", "forget_acc", "retain_acc", "test_acc"}}``
+    #: with arms ``method`` / ``oracle`` / ``original`` / ``randinit``. Produced by the runner,
+    #: because the protocol -- optimiser, learning rate, batch order, step schedule -- must be
+    #: byte-identical across arms or the comparison is between protocols rather than models. The
+    #: audit interprets the curves; it does not get to choose how they were produced.
+    relearn_curves: Mapping[str, Mapping[str, np.ndarray]] = field(default_factory=dict)
+
+    #: GAP-pooled activations, ``{layer: (n_probes, n_features)}``, for the target model, and
+    #: ``{layer: (n_oracles, n_probes, n_features)}`` for the ensemble. Produced by the Stage 6
+    #: runner from checkpoints -- nothing in Stages 3-5 wrote them, so the representation audit
+    #: is the point at which they first exist.
+    activations: Mapping[str, np.ndarray] = field(default_factory=dict)
+    oracle_activations: Mapping[str, np.ndarray] = field(default_factory=dict)
+
     #: RMIA reference (shadow) models: ``{probe_set: (n_refs, n, n_classes)}``. Distinct from
     #: ``oracle_logits``: oracles are retrained *without a specific forget set* and answer "what
     #: would a correct model look like"; references are trained on random halves of the data and

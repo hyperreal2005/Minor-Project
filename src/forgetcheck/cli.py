@@ -406,6 +406,38 @@ def cmd_unlearn(args) -> int:
     )
 
 
+def cmd_audit(args) -> int:
+    """Stage 6: run the audits over the unlearn checkpoints this machine holds.
+
+    Shard-local on purpose. An audit turns a 44.7 MB checkpoint into a few KB of Parquet, so each
+    account audits what it produced and only records travel -- consolidating 15 GB of weights
+    onto one machine first would be the expensive way round.
+    """
+    from .audits import REGISTRY
+    from .audits.runner import available_targets, run_audits
+
+    ctx = _ctx(args)
+    names = args.audits.split(",") if args.audits else sorted(REGISTRY)
+    unknown = [n for n in names if n not in REGISTRY]
+    if unknown:
+        raise SystemExit(f"unknown audit(s) {unknown}; known: {sorted(REGISTRY)}")
+
+    targets = available_targets(ctx.store, forget=args.forget)
+    if args.methods:
+        wanted = set(args.methods.split(","))
+        targets = [t for t in targets if t.method in wanted]
+    if args.seeds:
+        wanted_s = {int(x) for x in args.seeds.split(",")}
+        targets = [t for t in targets if t.seed in wanted_s]
+
+    print(f"audits: {', '.join(names)}")
+    return run_audits(
+        ctx, targets=targets, audits=names, device=args.device,
+        batch_size=int(ctx.audits.get("behavior", {}).get("batch_size", 512)),
+        dry_run=args.dry_run,
+    )
+
+
 def cmd_status(args) -> int:
     """What is in the store, and what each stage still needs."""
     ctx = _ctx(args)
@@ -424,9 +456,15 @@ def cmd_status(args) -> int:
         except Exception as exc:
             print(f"  stage {stage} ({label}): unavailable — {exc}")
             continue
-        have = sum(1 for it in items if ctx.store.has_checkpoint(it.run_id))
+        # Counted by state, not presence. Counting presence alone reported 240/240 while 64
+        # checkpoints were from superseded method configurations -- a green bar over stale data
+        # is worse than no bar.
+        states = [it.state(ctx.store) for it in items]
+        have = states.count("have")
+        stale = states.count("stale")
         bar = "#" * int(20 * have / max(1, len(items)))
-        print(f"  stage {stage} {label:26s} {have:4d}/{len(items):4d} |{bar:<20}|")
+        flag = f"  {stale} STALE" if stale else ""
+        print(f"  stage {stage} {label:26s} {have:4d}/{len(items):4d} |{bar:<20}|{flag}")
     return 0
 
 
@@ -465,6 +503,14 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--methods", default=None,
                    help="comma-separated methods, e.g. finetune,salun")
     q.add_argument("--seeds", default=None, help="comma-separated seeds, e.g. 0 or 0,1")
+    a = sub.add_parser("audit", help="stage 6: run audits over this machine's checkpoints")
+    a.add_argument("--audits", default=None,
+                   help="comma-separated audit names; default is all of them")
+    a.add_argument("--forget", default=None, help="restrict to one forget condition")
+    a.add_argument("--methods", default=None, help="comma-separated methods")
+    a.add_argument("--seeds", default=None, help="comma-separated seeds")
+    a.set_defaults(func=cmd_audit)
+
     q.add_argument("--force", action="store_true",
                    help="recompute matching runs even if present and current; requires a filter")
     q.set_defaults(func=cmd_queue)
