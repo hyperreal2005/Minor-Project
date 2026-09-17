@@ -684,7 +684,7 @@ for kind in ("outputs", "activations"):
     src = REPO_DIR / "artifacts" / kind
     if src.is_dir():
         shutil.copytree(src, OUT / "artifacts" / kind, symlinks=False)
-shards = sorted((OUT / "results").rglob("*--audit.parquet"))
+shards = sorted((OUT / "results").rglob("*--audit-*.parquet"))
 n_out = sum(1 for p in OUT.rglob("*.npz"))
 mb = sum(p.stat().st_size for p in OUT.rglob("*") if p.is_file()) / 1e6
 print(f"staged {len(shards)} audit shards, {n_out} cached output files, {mb:.0f} MB")

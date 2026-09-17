@@ -149,18 +149,24 @@ class SDE(Audit):
         p_t = softmax(target)
         sigma = cfg.get("sigma", "median")
 
-        # Reference subsets matched in size to the target, so the split-half sample size -- which
-        # HSIC's estimator depends on -- is the same for all three.
-        n = len(p_t)
-        def _match(arr):
-            arr = softmax(np.asarray(arr, dtype=np.float64))
-            if len(arr) <= n:
-                return arr
-            return arr[rng.choice(len(arr), n, replace=False)]
+        # All three subsets cut to ONE common size -- the smallest of them -- before splitting.
+        # The biased HSIC estimator carries an O(1/n) term, so two subsets of different size have
+        # different H distributions *even when equally dependent*. The first full run matched the
+        # references down to the target only; at rand-5000 the retain probe (3000) could not be
+        # matched up, the target and out-of-training reference were split into 2500s and the
+        # in-training reference into 1500s, and every method scored margin ~+0.5 -- "out of
+        # training" -- from the size gap alone. The collapsed control, whose HSIC is zero at any
+        # size, sat at 0.07, which is how the artefact was recognised.
+        p_in = softmax(np.asarray(ref_in, dtype=np.float64))
+        p_out = softmax(np.asarray(ref_out, dtype=np.float64))
+        n = min(len(p_t), len(p_in), len(p_out))
 
-        d_t = split_half_distribution(p_t, n_draws=n_draws, sigma=sigma, rng=rng)
-        d_in = split_half_distribution(_match(ref_in), n_draws=n_draws, sigma=sigma, rng=rng)
-        d_out = split_half_distribution(_match(ref_out), n_draws=n_draws, sigma=sigma, rng=rng)
+        def _cut(arr):
+            return arr if len(arr) == n else arr[rng.choice(len(arr), n, replace=False)]
+
+        d_t = split_half_distribution(_cut(p_t), n_draws=n_draws, sigma=sigma, rng=rng)
+        d_in = split_half_distribution(_cut(p_in), n_draws=n_draws, sigma=sigma, rng=rng)
+        d_out = split_half_distribution(_cut(p_out), n_draws=n_draws, sigma=sigma, rng=rng)
         if d_t.size == 0 or d_in.size == 0 or d_out.size == 0:
             return undefined
 

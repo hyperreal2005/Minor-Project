@@ -28,7 +28,7 @@ genuinely unresolved — as opposed to merely unwritten.
 > Plan stage 4 is "write the unlearning methods"; queue stage 4 is shadows. Read the CLI's
 > `status` output for the queue meaning.
 
-**Test suite: 480 passing** (+3 `slow`, incl. the Stage 6 end-to-end) (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
+**Test suite: 483 passing** (+5 `slow`, incl. the Stage 6 end-to-end) (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
 
 ---
 
@@ -1086,6 +1086,91 @@ should say so directly.
 The relearn_norm change alters no stored data; the 30 `rand-500` records can be re-derived from
 the caches on a laptop, or simply left — Stage 8 will recompute from `relearn_auc` and the anchor
 records if `min_anchor_gap` changes again.
+
+## Stage 6 over six conditions — three runner defects found in the numbers (17 Sep 2026)
+
+180 models across rand-500 / 2500 / 5000, canary-500, mem-med, mem-high; 6880 rows; clean. Two
+conditions (rand-3000, mem-low) still to come. Three rows in the summary table were wrong for
+reasons that were mine, and each one is now a regression test.
+
+### 1. The canary condition was audited on the wrong labels
+
+Stage 5 trained and unlearned the canary models on the *corrupted* labels (`apply_canaries`);
+the Stage 6 runner evaluated every probe on the clean bundle. Consequences in the table:
+
+- **RMIA 0.14–0.30, far below chance.** With true labels, a remembered canary has *low*
+  p(y_true), so it reads as a strong non-member. With the labels the models actually saw, a
+  remembered canary has *high* p(y_canary) against clean shadows at ~0.01 — a strong member —
+  and an unlearned one sits at 0.5. That is the interpretable direction, and the one Stage 5's
+  `canary_acc` used.
+- **Relearning anchors inverted.** Reintroducing the *true* labels teaches the model something
+  the oracle already knows (M₀ starts at ~0 on true labels, the oracle at ~0.9), so the
+  denominator went negative and `neggrad` came out at +6.2. Reintroducing the canary labels is
+  what "relearn the forgotten thing" means.
+- Population MIA's high AUC (0.67–0.85) was the loss feature separating wrong-labelled from
+  right-labelled examples: label information, not membership.
+
+The cache now applies canaries to the condition's bundle for every train-split probe and the
+relearning batches, and treats all 32 shadows as OUT for the canary association (a clean shadow
+never saw it, whichever half its image fell in). Behavioral, representation and SDE are
+label-free and stand. **canary-500 must be re-audited in full** (`--forget canary-500 --force`).
+
+### 2. SDE at rand-5000 was a sample-size artefact
+
+Every non-collapsed method scored margin ≈ **+0.50** at rand-5000 against ≈ 0 everywhere else.
+Not a finding: the retain probe (3000) could not be matched up to the 5000-example target, so the
+target and out-of-training reference were split into 2500-halves and the in-training reference
+into 1500-halves. The biased HSIC estimator carries an O(1/n) term, and the size gap alone made
+the target resemble "out". The tell was the collapsed control at 0.07 — its HSIC is zero at any
+size. All three subsets are now cut to one common size before splitting. **SDE at rand-5000 must
+be recomputed** — from the cache, CPU-only, minutes (`--audits sde --forget rand-5000 --force`).
+
+### 3. Base-model relearning anchors collided across conditions
+
+Five clean base models serve seven conditions each, and the anchor shard was named
+`<base>--relearn-anchor.parquet` — every condition overwrote the previous one's. 40 anchor rows
+survived where there should have been 60. The suffix now carries the condition. **Relearning
+should be re-run everywhere** (`--audits relearning --force`, ~1.5 h across accounts); this also
+applies the `min_anchor_gap` guard uniformly — the −48.9 / −11.8 / −7.5 `relearn_norm` values in
+this run predate it.
+
+### What stands, and what it says
+
+**mem-high-3000, the primary condition, is where the story is** (oracle forget_acc 0.5575, so
+forgetting is detectable). RMIA ranks the methods — finetune 0.843, scrub 0.819, l1sparse 0.782,
+neggradplus 0.619, salun 0.596 — and `relearn_norm` agrees: finetune 0.86 (recovers like M₀,
+cosmetic), neggradplus 0.26 (recovers like a retrain). Two audits from different families, the
+same ordering. `js_to_oracle` puts salun closest (0.150) and neggrad at the bound (0.622).
+
+**Population MIA reads 0.72–0.84 for every method at mem-high — including ones RMIA says
+forgot.** High-memorization examples are atypical, so they are separable from typical test
+examples by loss and confidence *regardless of membership*. Prediction for Stage 7: the oracle
+itself will score well above 0.5 here. That is the [21] critique measured, not a defect.
+
+**The neggrad row is the audit-validity result at every condition**: privacy AUCs 0.49–0.51,
+SDE margin near zero, CKA 0.06–0.15, JS at the bound. Passes what does not consult a retrain,
+fails what does.
+
+**`status` now shows a Stage 6 line** — audited / total unlearned models.
+
+## Partial re-audits would have destroyed data — per-audit shards (17 Sep 2026)
+
+Records were one shard per model, `<run_id>--audit.parquet`, holding all six audits, and
+`write_records` replaces the file. So the re-run commands recommended above — `--audits sde
+--force`, `--audits relearning --force` — would each have replaced a model's six-audit shard with
+a one-audit shard and silently dropped the other five. Caught by asking what account 3 should run
+on, before anyone ran them.
+
+Now one shard per (model, audit): `<run_id>--audit-<name>.parquet`. A re-run of one audit
+rewrites one file; a resumed session runs only the audits a model is missing rather than all six.
+The combined shards accounts 1 and 2 already wrote are recognised as audited and split lazily —
+on the next write to that model, into per-audit shards, rows dropped for the audit being
+rewritten, the combined file removed — with pyarrow rather than pandas so nullable integers do
+not come back as float NaN. Two `slow` end-to-end tests cover both paths: a partial re-run leaves
+the other audits' row counts unchanged, and a migrated legacy shard yields every row exactly once.
+
+**Account 3 runs on this commit.** Its conditions (mem-low, rand-3000) are unaffected by the
+canary and SDE fixes, and it gets correct anchor shards and the `min_anchor_gap` guard directly.
 
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 

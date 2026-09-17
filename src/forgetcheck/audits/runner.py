@@ -32,7 +32,7 @@ from .probes import ProbeSpec, build_probes
 
 __all__ = [
     "AuditTarget", "available_targets", "audit_one", "run_audits", "ModelOutputs",
-    "shard_conditions", "already_audited",
+    "shard_conditions", "already_audited", "audited_audits",
 ]
 
 
@@ -143,6 +143,20 @@ class _ConditionCache:
         self.ctx = ctxobj
         self.forget_id = forget_id
         self.probes = probes
+        # The canary condition's models were trained and unlearned on corrupted labels
+        # (Stage 5's `apply_canaries`), and the audits must see the same labels: a membership
+        # attack asks whether an example looks like it did *in training*, and relearning must
+        # reintroduce the association that was forgotten, not the true label the oracle already
+        # knows. Evaluating on the clean bundle -- what the first Stage 6 run did -- inverted RMIA
+        # (0.14-0.30, "below chance") and made the relearning anchors point the wrong way.
+        spec = ctxobj.spec(forget_id)
+        self.spec = spec
+        if spec.kind == "canary":
+            from ..data.cifar import apply_canaries
+
+            self.bundle, _ = apply_canaries(ctxobj.bundle, probes.forget)
+        else:
+            self.bundle = ctxobj.bundle
         self.layers = layers
         self.device = device
         self.batch_size = batch_size
@@ -172,7 +186,7 @@ class _ConditionCache:
             return None
         state, _ = self.ctx.store.load_checkpoint(rid)
         out = evaluate_model(
-            state, bundle=self.ctx.bundle, probes=self.probes, layers=self.layers,
+            state, bundle=self.bundle, probes=self.probes, layers=self.layers,
             device=self.device, batch_size=self.batch_size, with_activations=with_activations,
         )
         if cache:
@@ -216,7 +230,7 @@ class _ConditionCache:
     def _fresh_model(self, state):
         from ..models.resnet import make_resnet18
 
-        m = make_resnet18(num_classes=self.ctx.bundle.num_classes)
+        m = make_resnet18(num_classes=self.bundle.num_classes)
         if state is not None:
             m.load_state_dict(state)
         return m
@@ -233,7 +247,7 @@ class _ConditionCache:
             subset = np.sort(rng.choice(self.probes.forget, k, replace=False))
             # Unaugmented and unshuffled: the batch *order* is part of the protocol.
             loader = make_loader(
-                self.ctx.bundle, subset, train=False, batch_size=int(cfg["batch_size"]),
+                self.bundle, subset, train=False, batch_size=int(cfg["batch_size"]),
                 split="train",
             )
             self._batches = [(x, y) for x, y, _ in loader]
@@ -249,7 +263,7 @@ class _ConditionCache:
         if not hasattr(self, "_eval_loaders"):
             from ..data.cifar import make_loader
 
-            b = self.ctx.bundle
+            b = self.bundle
             self._eval_loaders = {
                 "forget": make_loader(b, self.probes.forget, train=False, batch_size=512),
                 "retain": make_loader(b, self.probes.retain[:1000], train=False, batch_size=512),
@@ -390,7 +404,13 @@ class _ConditionCache:
                 trained_on = shadow_indices(
                     self.ctx.bundle.n_train, idx, audit_seed=audit_seed, fraction=fraction
                 )
-                in_forget.append(np.isin(self.probes.forget, trained_on))
+                if self.spec.kind == "canary":
+                    # Shadows trained on clean labels never saw the canary association, whether
+                    # or not the example's *image* was in their half. For the corrupted label
+                    # every shadow is OUT, and all 32 may serve as the reference.
+                    in_forget.append(np.zeros(self.probes.forget.size, dtype=bool))
+                else:
+                    in_forget.append(np.isin(self.probes.forget, trained_on))
             self._refs = {k: np.stack(v) for k, v in logits.items()}
             self._ref_mask = {"forget": np.stack(in_forget)} if in_forget else {}
         return self._refs, self._ref_mask
@@ -548,15 +568,71 @@ def shard_conditions(conditions: Sequence[str], *, account: int, of: int) -> lis
     return ordered[account - 1 :: of]
 
 
-def already_audited(ctxobj, run_id_: str) -> bool:
-    """True if this model's audit shard is already in the records directory.
+def _audit_suffix(name: str) -> str:
+    return f"audit-{name}"
+
+
+def audited_audits(ctxobj, run_id_: str) -> set[str]:
+    """Which audits already have records for this model.
+
+    One shard **per audit**, `<run_id>--audit-<name>.parquet`, so re-running one audit rewrites
+    one file. The first Stage 6 runs wrote a single `<run_id>--audit.parquet` holding all six;
+    with that layout `--audits sde --force` would have replaced a model's six-audit shard with
+    an SDE-only one and silently destroyed the other five. Legacy combined shards are still
+    recognised here and are split on the next write to that model (`_migrate_legacy_shard`).
+    """
+    from ..registry.records import shard_path
+
+    done: set[str] = set()
+    legacy = shard_path(ctxobj.records_dir, run_id_, suffix="audit")
+    if legacy.is_file():
+        import pyarrow.parquet as pq
+
+        done |= set(pq.read_table(legacy, columns=["audit"])["audit"].to_pylist())
+    for name in REGISTRY:
+        if shard_path(ctxobj.records_dir, run_id_, suffix=_audit_suffix(name)).is_file():
+            done.add(name)
+    return done
+
+
+def already_audited(ctxobj, run_id_: str, audits: Sequence[str] | None = None) -> bool:
+    """True if every requested audit (default: all registered) has records for this model.
 
     The audit stage is resumable the same way the training stages are: a session that dies
     on model 40 of 90 costs the one in flight, and re-running the same command picks up there.
     """
+    wanted = set(audits) if audits is not None else set(REGISTRY)
+    return wanted <= audited_audits(ctxobj, run_id_)
+
+
+def _migrate_legacy_shard(ctxobj, run_id_: str, *, keep_out: set[str]) -> None:
+    """Split a combined `<run_id>--audit.parquet` into per-audit shards, then remove it.
+
+    ``keep_out`` names the audits about to be rewritten; their legacy rows are dropped rather
+    than copied, so the new shard is the only one. Done with pyarrow directly -- the rows were
+    validated when first written, and rebuilding RunRecords through pandas would turn every
+    nullable integer into a float NaN on the way.
+    """
+    import pyarrow.compute as pc
+    import pyarrow.parquet as pq
+
     from ..registry.records import shard_path
 
-    return shard_path(ctxobj.records_dir, run_id_, suffix="audit").is_file()
+    legacy = shard_path(ctxobj.records_dir, run_id_, suffix="audit")
+    if not legacy.is_file():
+        return
+    table = pq.read_table(legacy)
+    for name in set(table["audit"].to_pylist()):
+        if name in keep_out:
+            continue
+        target = shard_path(ctxobj.records_dir, run_id_, suffix=_audit_suffix(name))
+        if target.is_file():
+            continue  # a per-audit shard already exists and is newer by construction
+        sub = table.filter(pc.equal(table["audit"], name))
+        tmp = target.with_suffix(".parquet.tmp")
+        pq.write_table(sub, tmp, compression="zstd")
+        tmp.replace(target)
+    legacy.unlink()
 
 
 def run_audits(
@@ -587,13 +663,20 @@ def run_audits(
     written = failed = skipped_done = 0
     for forget_id in mine:
         group = by_condition[forget_id]
-        if not force:
-            todo = [t for t in group if not already_audited(ctxobj, t.run_id)]
-            skipped_done += len(group) - len(todo)
-            group = todo
-        if not group:
+        # Per target, only the audits that are missing (or all of them under --force). A model
+        # with five of six done gets the sixth, not a full redo.
+        plan: list[tuple[AuditTarget, tuple[str, ...]]] = []
+        for t in group:
+            todo = audits if force else tuple(a for a in audits if a not in audited_audits(ctxobj, t.run_id))
+            if todo:
+                plan.append((t, todo))
+            else:
+                skipped_done += 1
+        if not plan:
             print(f"\n{forget_id}: all targets already audited", flush=True)
             continue
+        group = [t for t, _ in plan]
+        todo_by_target = {t.run_id: a for t, a in plan}
         probes = build_probes(
             forget_indices=ctxobj.forget_indices(forget_id),
             n_train=ctxobj.bundle.n_train,
@@ -615,26 +698,35 @@ def run_audits(
             device=device, batch_size=batch_size,
         )
         for i, t in enumerate(group, 1):
-            print(f"  [{i}/{len(group)}] {t.run_id} ...", end="", flush=True)
+            todo = todo_by_target[t.run_id]
+            tag = "" if len(todo) == len(audits) else f" [{', '.join(todo)}]"
+            print(f"  [{i}/{len(group)}] {t.run_id}{tag} ...", end="", flush=True)
             t0 = time.perf_counter()
             try:
                 records = audit_one(
-                    t, ctxobj=ctxobj, cache=cache, audits=audits,
+                    t, ctxobj=ctxobj, cache=cache, audits=todo,
                     device=device, batch_size=batch_size,
                 )
             except Exception as exc:  # one bad target must not lose the whole condition
                 failed += 1
                 print(f" FAILED: {type(exc).__name__}: {exc}", flush=True)
                 continue
-            # One shard per run_id. The target's rows go under `--audit`; the relearning
-            # anchors are recorded under the oracle's and original's own ids, and get a
-            # distinct suffix so that Stage 7 passing an oracle *through* the audits as a
-            # candidate writes `<oracle>--audit` without overwriting `<oracle>--relearn-anchor`.
-            by_id: dict[str, list] = {}
+            # One shard per (run_id, audit) for the target, so a partial re-run touches only
+            # its own files. Relearning anchors go under the oracle's and original's own ids
+            # with the condition in the suffix: the five clean base models serve seven
+            # conditions each, and a suffix without it made every condition overwrite the
+            # previous one's (the first full run kept 40 anchor rows where there should have
+            # been 60). Stage 7 passing an oracle *through* the audits writes `--audit-*`
+            # shards and cannot collide with its anchor shard.
+            _migrate_legacy_shard(ctxobj, t.run_id, keep_out=set(todo))
+            by_key: dict[tuple[str, str], list] = {}
             for r in records:
-                by_id.setdefault(r.run_id, []).append(r)
-            for rid, rows in by_id.items():
-                suffix = "audit" if rid == t.run_id else "relearn-anchor"
+                by_key.setdefault((r.run_id, r.audit), []).append(r)
+            for (rid, audit_name), rows in by_key.items():
+                if rid == t.run_id:
+                    suffix = _audit_suffix(audit_name)
+                else:
+                    suffix = f"relearn-anchor-{forget_id}"
                 write_records(rows, ctxobj.records_dir, suffix=suffix)
             written += len(records)
             print(f" {len(records)} records in {time.perf_counter() - t0:.1f}s", flush=True)

@@ -372,3 +372,49 @@ class TestConditionSharding:
 
         a = build_parser().parse_args(["audit", "--account", "2", "--of", "3", "--force"])
         assert (a.account, a.of, a.force) == (2, 3, True)
+
+
+class TestCanaryLabels:
+    def test_the_canary_condition_is_audited_on_the_corrupted_labels(self, tmp_path):
+        """Stage 5 trained and unlearned the canary condition on corrupted labels; the first
+        Stage 6 run evaluated it on the clean bundle, which inverted RMIA (0.14-0.30) and pointed
+        the relearning anchors the wrong way. The condition cache must carry the same labels the
+        models saw."""
+        import sys
+
+        sys.path.insert(0, str(tmp_path.parent))
+        from tests.test_audits_e2e import _Ctx
+        from forgetcheck.audits.probes import build_probes
+        from forgetcheck.audits.runner import _ConditionCache
+
+        ctx = _Ctx(tmp_path, forget_id="canary-500", n_forget=40)
+        probes = build_probes(
+            forget_indices=ctx.forget_indices("canary-500"), n_train=ctx.bundle.n_train,
+            n_test=ctx.bundle.n_test, forget_id="canary-500",
+            config=ctx.audits["representation"],
+        )
+        cache = _ConditionCache(ctx, forget_id="canary-500", probes=probes,
+                                layers=("layer4",), device="cpu", batch_size=64)
+        clean = ctx.bundle.train_y[probes.forget]
+        seen = cache.bundle.train_y[probes.forget]
+        assert (clean != seen).all(), "every canary must carry its assigned wrong label"
+        # ...and only the canaries: retain labels are untouched.
+        np.testing.assert_array_equal(ctx.bundle.train_y[probes.retain],
+                                      cache.bundle.train_y[probes.retain])
+
+    def test_a_non_canary_condition_keeps_the_clean_bundle(self, tmp_path):
+        import sys
+
+        sys.path.insert(0, str(tmp_path.parent))
+        from tests.test_audits_e2e import _Ctx
+        from forgetcheck.audits.probes import build_probes
+        from forgetcheck.audits.runner import _ConditionCache
+
+        ctx = _Ctx(tmp_path, forget_id="rand-500", n_forget=40)
+        probes = build_probes(
+            forget_indices=ctx.forget_indices("rand-500"), n_train=ctx.bundle.n_train,
+            n_test=ctx.bundle.n_test, forget_id="rand-500",
+        )
+        cache = _ConditionCache(ctx, forget_id="rand-500", probes=probes,
+                                layers=("layer4",), device="cpu", batch_size=64)
+        assert cache.bundle is ctx.bundle

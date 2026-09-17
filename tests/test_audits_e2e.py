@@ -138,3 +138,60 @@ def test_a_second_run_skips_audited_models_and_reads_the_cache(tmp_path, capsys)
     rc = run_audits(ctx, device="cpu", batch_size=64, force=True)
     out = capsys.readouterr().out
     assert rc == 0 and "records in" in out
+
+
+def test_a_partial_rerun_touches_only_its_own_audit(tmp_path, capsys):
+    """`--audits sde --force` must rewrite SDE's rows and nothing else. With one combined shard
+    per model -- the first Stage 6 layout -- it replaced the six-audit shard with an SDE-only one
+    and destroyed the other five audits' rows."""
+    from forgetcheck.audits import audit_names
+    from forgetcheck.audits.runner import audited_audits, run_audits
+    from forgetcheck.registry import read_records
+
+    ctx = _Ctx(tmp_path)
+    target = _seed_store(ctx)
+    run_audits(ctx, device="cpu", batch_size=64)
+    before = read_records(ctx.records_dir)
+    before = before[before["run_id"] == target]
+    n_other = len(before[before["audit"] != "sde"])
+    capsys.readouterr()
+
+    rc = run_audits(ctx, device="cpu", batch_size=64, audits=["sde"], force=True)
+    assert rc == 0
+    after = read_records(ctx.records_dir)
+    after = after[after["run_id"] == target]
+    assert set(after["audit"]) == set(audit_names()), "other audits' rows were lost"
+    assert len(after[after["audit"] != "sde"]) == n_other
+    assert audited_audits(ctx, target) == set(audit_names())
+
+
+def test_legacy_combined_shards_are_split_not_duplicated(tmp_path, capsys):
+    """Accounts 1 and 2 wrote `<run_id>--audit.parquet` before per-audit shards existed. On the
+    next write to that model the combined shard is split; its rows must appear exactly once."""
+    from forgetcheck.audits.runner import audited_audits, run_audits
+    from forgetcheck.registry import read_records, write_records
+    from forgetcheck.registry.records import shard_path
+
+    ctx = _Ctx(tmp_path)
+    target = _seed_store(ctx)
+    run_audits(ctx, device="cpu", batch_size=64)
+    df = read_records(ctx.records_dir)
+    rows_before = len(df[df["run_id"] == target])
+
+    # Reconstruct the legacy layout from the per-audit shards, then delete them.
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    tables = []
+    for f in sorted(ctx.records_dir.glob(f"{target}--audit-*.parquet")):
+        tables.append(pq.read_table(f))
+        f.unlink()
+    pq.write_table(pa.concat_tables(tables), shard_path(ctx.records_dir, target, suffix="audit"))
+    assert audited_audits(ctx, target), "the legacy shard must still count as audited"
+    capsys.readouterr()
+
+    run_audits(ctx, device="cpu", batch_size=64, audits=["behavior"], force=True)
+    df = read_records(ctx.records_dir)
+    got = df[df["run_id"] == target]
+    assert len(got) == rows_before, "rows were duplicated or lost in migration"
+    assert not shard_path(ctx.records_dir, target, suffix="audit").exists()

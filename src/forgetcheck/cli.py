@@ -465,6 +465,18 @@ def cmd_status(args) -> int:
         bar = "#" * int(20 * have / max(1, len(items)))
         flag = f"  {stale} STALE" if stale else ""
         print(f"  stage {stage} {label:26s} {have:4d}/{len(items):4d} |{bar:<20}|{flag}")
+
+    # Stage 6 is not a queue stage -- it has no work list to plan -- so it is counted from what
+    # it leaves behind: one `--audit` record shard per unlearned model.
+    try:
+        from .audits.runner import already_audited, available_targets
+
+        targets = available_targets(ctx.store)
+        done = sum(1 for t in targets if already_audited(ctx, t.run_id))
+        bar = "#" * int(20 * done / max(1, len(targets)))
+        print(f"  stage 6 {'audits':26s} {done:4d}/{len(targets):4d} |{bar:<20}|")
+    except Exception as exc:
+        print(f"  stage 6 (audits): unavailable — {exc}")
     return 0
 
 

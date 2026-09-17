@@ -180,3 +180,17 @@ class TestSDEAudit:
         # The whole point of the method: retrain-free.
         a = get_audit("sde")
         assert a.needs_oracles is False and a.needs_references is False
+
+
+class TestSizeMatching:
+    def test_unequal_subset_sizes_do_not_manufacture_a_verdict(self):
+        """The first full Stage 6 run scored every method at rand-5000 with margin ~+0.5 --
+        'out of training' -- because the retain reference (3000) could not be matched up to the
+        5000-example target: the biased HSIC estimator's O(1/n) term made the 1500-half reference
+        differ from the 2500-half target and test by size alone. Three subsets from ONE
+        distribution, at three different sizes, must come out with a margin near zero."""
+        rng = np.random.default_rng(0)
+        pool = cotrained_pool(n=600, seed=7)
+        forget, retain, test = pool[:240], pool[240:360], pool[360:600]   # 240 / 120 / 240
+        out = get_audit("sde").measure(ctx_for(forget, retain, test))
+        assert abs(out[("sde_margin", "forget")]) < 0.1, out
