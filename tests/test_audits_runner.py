@@ -418,3 +418,74 @@ class TestCanaryLabels:
         cache = _ConditionCache(ctx, forget_id="rand-500", probes=probes,
                                 layers=("layer4",), device="cpu", batch_size=64)
         assert cache.bundle is ctx.bundle
+
+
+class TestUndefinedRows:
+    """Two undefined metrics of one audit on one probe must not collide on the record key."""
+
+    @staticmethod
+    def _ctx_with_two_undefined(tmp_path):
+        import sys
+
+        sys.path.insert(0, str(tmp_path.parent))
+        from tests.test_audits_e2e import _Ctx
+
+        return _Ctx(tmp_path)
+
+    def test_two_undefined_metrics_become_one_counted_row(self):
+        # The exact shape of the mem-low crash: relearn_norm undefined (anchors coincide) and
+        # relearn_t80 undefined (never recovers) on the same probe, same audit, same model.
+        from forgetcheck.registry.records import validate
+        from forgetcheck.registry import make_record
+        from forgetcheck.data.forget_sets import spec_by_id
+
+        spec = spec_by_id("mem-low-3000")
+        values = {("relearn_auc", "forget"): 0.5,
+                  ("relearn_norm", "forget"): float("nan"),
+                  ("relearn_t80", "forget"): float("inf")}
+        undefined: dict[str, list[str]] = {}
+        rows = []
+        common = dict(run_id="c10r18__unlearn__mem-low-3000__neggrad__train0",
+                      **spec.as_record_fields(), audit_seed=0)
+        for (metric, probe), v in values.items():
+            if np.isfinite(v):
+                rows.append(make_record(audit="relearning", metric=metric, probe_set=probe,
+                                        value=v, n_probe=10, **common))
+            else:
+                undefined.setdefault(probe, []).append(metric)
+        for probe, ms in undefined.items():
+            rows.append(make_record(audit="relearning", metric="audit_undefined",
+                                    probe_set=probe, value=float(len(ms)), n_probe=10,
+                                    notes="undefined: " + ", ".join(sorted(ms)), **common))
+        keys = [(r.audit, r.metric, r.probe_set) for r in rows]
+        assert len(keys) == len(set(keys)), "duplicate record key"
+        und = [r for r in rows if r.metric == "audit_undefined"]
+        assert len(und) == 1 and und[0].value == 2.0
+        assert "relearn_norm" in und[0].notes and "relearn_t80" in und[0].notes
+        for r in rows:
+            validate(r)
+
+
+class TestWriteFailureIsPerTarget:
+    def test_a_record_error_fails_one_model_not_the_session(self, tmp_path, capsys, monkeypatch):
+        """A RecordError on model 11 of 30 once ended the run; the remaining nineteen were never
+        attempted. The write now sits inside the per-target handler."""
+        import sys
+
+        sys.path.insert(0, str(tmp_path.parent))
+        from tests.test_audits_e2e import _Ctx, _seed_store
+        from forgetcheck.audits import runner
+        from forgetcheck.registry.records import RecordError
+
+        ctx = _Ctx(tmp_path)
+        _seed_store(ctx)
+
+        def boom(*a, **k):
+            raise RecordError("synthetic duplicate key")
+
+        monkeypatch.setattr(runner, "_write_target", boom)
+        rc = runner.run_audits(ctx, device="cpu", batch_size=64, audits=["behavior"])
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert "FAILED: RecordError" in out
+        assert "1 targets failed" in out

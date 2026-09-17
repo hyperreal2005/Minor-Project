@@ -495,27 +495,36 @@ def audit_one(
             audit_seed=int(ctxobj.seeds.get("audit", 0)),
         )
         common["forget_size"] = int(probes.forget.size)
+        undefined: dict[str, list[str]] = {}
         for (metric, probe), value in values.items():
-            n_probe = _n_probe(probe, probes, outputs)
             if np.isfinite(value):
                 records.append(
                     make_record(
-                        audit=name, metric=metric, probe_set=probe,
-                        value=float(value), n_probe=n_probe, notes=notes, **common,
+                        audit=name, metric=metric, probe_set=probe, value=float(value),
+                        n_probe=_n_probe(probe, probes, outputs), notes=notes, **common,
                     )
                 )
-                continue
+            else:
+                undefined.setdefault(probe, []).append(metric)
 
-            # An undefined value cannot go in the value column -- `validate()` rejects NaN and
-            # inf, correctly, because either would silently poison every aggregate downstream.
-            # But dropping the row would erase the most informative case in the study: the
-            # destroyed control is exactly the model whose audits come back undefined, and
-            # "could not measure" has to stay distinguishable from "never ran".
-            why = f"{metric} undefined" + (f": {notes}" if notes else "")
+        # An undefined value cannot go in the value column -- `validate()` rejects NaN and inf,
+        # correctly, because either would silently poison every aggregate downstream. But
+        # dropping the row would erase the most informative case in the study: the destroyed
+        # control is exactly the model whose audits come back undefined, and "could not measure"
+        # has to stay distinguishable from "never ran".
+        #
+        # ONE row per (audit, probe), valued by how many metrics were undefined and naming them
+        # in `notes`. A row per undefined metric collided on the record key the moment two
+        # metrics of one audit were undefined on the same probe -- which the collapsed control
+        # did at mem-low, where relearn_norm (anchors coincide) and relearn_t80 (never recovers)
+        # both came back undefined and the write raised on a duplicate key.
+        for probe, metrics in undefined.items():
+            why = f"undefined: {', '.join(sorted(metrics))}" + (f"; {notes}" if notes else "")
             records.append(
                 make_record(
                     audit=name, metric="audit_undefined", probe_set=probe,
-                    value=1.0, n_probe=n_probe, notes=why, **common,
+                    value=float(len(metrics)), n_probe=_n_probe(probe, probes, outputs),
+                    notes=why, **common,
                 )
             )
     if skipped:
@@ -635,6 +644,25 @@ def _migrate_legacy_shard(ctxobj, run_id_: str, *, keep_out: set[str]) -> None:
     legacy.unlink()
 
 
+def _write_target(ctxobj, t: AuditTarget, forget_id: str, todo, records) -> None:
+    """Write one target's records.
+
+    One shard per (run_id, audit) for the target, so a partial re-run touches only its own
+    files. Relearning anchors go under the oracle's and original's own ids with the condition
+    in the suffix: the five clean base models serve seven conditions each, and a suffix without
+    it made every condition overwrite the previous one's (the first full run kept 40 anchor rows
+    where there should have been 60). Stage 7 passing an oracle *through* the audits writes
+    `--audit-*` shards and cannot collide with its anchor shard.
+    """
+    _migrate_legacy_shard(ctxobj, t.run_id, keep_out=set(todo))
+    by_key: dict[tuple[str, str], list] = {}
+    for r in records:
+        by_key.setdefault((r.run_id, r.audit), []).append(r)
+    for (rid, audit_name), rows in by_key.items():
+        suffix = _audit_suffix(audit_name) if rid == t.run_id else f"relearn-anchor-{forget_id}"
+        write_records(rows, ctxobj.records_dir, suffix=suffix)
+
+
 def run_audits(
     ctxobj,
     *,
@@ -707,27 +735,15 @@ def run_audits(
                     t, ctxobj=ctxobj, cache=cache, audits=todo,
                     device=device, batch_size=batch_size,
                 )
-            except Exception as exc:  # one bad target must not lose the whole condition
+                _write_target(ctxobj, t, forget_id, todo, records)
+            except Exception as exc:
+                # One bad target must not lose the whole condition -- and the write is inside
+                # this block on purpose. A RecordError on model 11 of 30 once took the session
+                # down with it: the ten already written were fine, and the other nineteen were
+                # never attempted.
                 failed += 1
                 print(f" FAILED: {type(exc).__name__}: {exc}", flush=True)
                 continue
-            # One shard per (run_id, audit) for the target, so a partial re-run touches only
-            # its own files. Relearning anchors go under the oracle's and original's own ids
-            # with the condition in the suffix: the five clean base models serve seven
-            # conditions each, and a suffix without it made every condition overwrite the
-            # previous one's (the first full run kept 40 anchor rows where there should have
-            # been 60). Stage 7 passing an oracle *through* the audits writes `--audit-*`
-            # shards and cannot collide with its anchor shard.
-            _migrate_legacy_shard(ctxobj, t.run_id, keep_out=set(todo))
-            by_key: dict[tuple[str, str], list] = {}
-            for r in records:
-                by_key.setdefault((r.run_id, r.audit), []).append(r)
-            for (rid, audit_name), rows in by_key.items():
-                if rid == t.run_id:
-                    suffix = _audit_suffix(audit_name)
-                else:
-                    suffix = f"relearn-anchor-{forget_id}"
-                write_records(rows, ctxobj.records_dir, suffix=suffix)
             written += len(records)
             print(f" {len(records)} records in {time.perf_counter() - t0:.1f}s", flush=True)
 

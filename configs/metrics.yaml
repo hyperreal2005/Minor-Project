@@ -258,8 +258,10 @@ meta:
     oracle_ref: false
     probe_sets: [all]
     doc: >
-      1.0 for each (metric, probe_set) an audit ran on but could not define -- an AUC over
-      zero-variance scores, a CKA against a constant representation. `validate()` rejects NaN in
+      How many of an audit's metrics were undefined on a probe set -- an AUC over zero-variance
+      scores, a CKA against a constant representation -- with the metric names in `notes`. One
+      row per (audit, probe_set): a row per metric collided on the record key as soon as two
+      metrics of one audit were undefined together, which the collapsed control does. `validate()` rejects NaN in
       the value column, correctly: a NaN silently poisons every aggregate it reaches. But simply
       dropping the row would erase the most informative case in the study, since the destroyed
       control is precisely the model whose audits come back undefined. So the row is written

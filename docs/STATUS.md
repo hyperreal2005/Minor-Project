@@ -28,7 +28,7 @@ genuinely unresolved — as opposed to merely unwritten.
 > Plan stage 4 is "write the unlearning methods"; queue stage 4 is shadows. Read the CLI's
 > `status` output for the queue meaning.
 
-**Test suite: 483 passing** (+5 `slow`, incl. the Stage 6 end-to-end) (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
+**Test suite: 485 passing** (+5 `slow`, incl. the Stage 6 end-to-end) (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
 
 ---
 
@@ -1171,6 +1171,30 @@ the other audits' row counts unchanged, and a migrated legacy shard yields every
 
 **Account 3 runs on this commit.** Its conditions (mem-low, rand-3000) are unaffected by the
 canary and SDE fixes, and it gets correct anchor shards and the `min_anchor_gap` guard directly.
+
+## Account 3 died at model 11 of 30 — two defects (18 Sep 2026)
+
+`RecordError: duplicate (audit=relearning, metric=audit_undefined, probe_set=forget)` on the
+mem-low `neggrad` control, and the session ended.
+
+**The duplicate.** `audit_undefined` was written as one row *per undefined metric*, all with the
+same (audit, metric="audit_undefined", probe_set) key. That collides the moment two metrics of
+one audit are undefined on one probe — which had never happened until the `min_anchor_gap` guard
+made `relearn_norm` undefined at mem-low *and* the control's `relearn_t80` was already undefined
+(never recovers). Now one row per (audit, probe), valued by the **count** of undefined metrics,
+with their names in `notes`. The registry doc is updated to match.
+
+**The crash.** `write_records` was called outside the per-target `try`, so a record error on one
+model took the session down; the ten already written were fine, the other nineteen and all of
+rand-3000 were never attempted. The write is now inside the handler: a bad model prints
+`FAILED`, counts as one failure, and the queue continues.
+
+**Measured cost at |Df| = 3000: 150–210 s per model**, against 45 s at 500. SDE dominates — its
+split-half Gram matrices are 1500² rather than 250², 36×, over 200 draws. A three-condition share
+at 3000 is ~2.5 h, not the ~1 h a 500-condition share suggested. Unchanged for now; the cost is
+in the paper's own protocol, and SDE re-runs from the cache on CPU if it is ever tuned.
+
+Account 3 resumes with the same command: the ten finished models are skipped, the rest run.
 
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 
