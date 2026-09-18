@@ -128,11 +128,19 @@ def _restore_all(name, dest):
     found = [f for f in found if f.is_dir()]
     if not found:
         return False
-    linked = dup = 0
+    linked = dup = empty = 0
+    empty_example = None
     for src_root in found:
+        n_here = 0
         for src in src_root.rglob("*"):
             if not src.is_file():
                 continue
+            # A zero-byte file in a dataset is almost always a symlink that was zipped as a
+            # pointer instead of its target. Link it anyway (the runner recomputes unreadable
+            # caches), but say so HERE, at restore time, not thirty failures later.
+            if src.stat().st_size == 0:
+                empty += 1
+                empty_example = empty_example or src
             target = dest / src.relative_to(src_root)
             if target.exists() or target.is_symlink():
                 dup += 1
@@ -140,8 +148,16 @@ def _restore_all(name, dest):
             target.parent.mkdir(parents=True, exist_ok=True)
             os.symlink(src, target)
             linked += 1
+            n_here += 1
+        # The mount layout under /kaggle/input is Kaggle's to decide and has changed before.
+        # Print the real path rather than letting anyone assume one.
+        print(f"{name}: {n_here:5d} files linked from {src_root}")
     print(f"{name}: linked {linked} files from {len(found)} dataset(s)"
           + (f", {dup} already present" if dup else ""))
+    if empty:
+        print(f"!! {name}: {empty} ZERO-BYTE files, e.g. {empty_example}")
+        print("!! That dataset version was uploaded from symlinks, not their targets. Cached")
+        print("!! outputs will be recomputed; records would be LOST -- check the .parquet count.")
     return True
 
 # Restore CIFAR-10 by locating its *contents*, not its folder name.
@@ -732,6 +748,15 @@ def nb_audit() -> dict:
         code(INSTALL),
         code(SETUP_AUDIT),
         code(config),
+        md("## What was attached, and where Kaggle mounted it\n\nThe mount layout under "
+           "`/kaggle/input` is Kaggle's to decide and has changed before. Nothing in the setup "
+           "cell assumes it -- every lookup is a recursive search -- but seeing the real paths "
+           "here is what stops anyone typing one from memory."),
+        code("!find /kaggle/input -maxdepth 4 -type d | sort | head -40\n"
+             "!echo; echo 'zero-byte files across ALL inputs (should be 0):'; "
+             "find /kaggle/input -type f -size -1c | wc -l\n"
+             "!echo 'record shards attached:'; find /kaggle/input -name '*.parquet' | wc -l\n"
+             "!echo 'cached outputs attached:'; find /kaggle/input -name '*.npz' | wc -l\n"),
         md("## What is in the store\n\nEvery stage should read complete; stale would mean a "
            "checkpoint from a superseded method configuration was attached."),
         code("!{CLI} --root . status\n"),

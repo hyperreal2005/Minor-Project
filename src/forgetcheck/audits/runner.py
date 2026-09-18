@@ -771,8 +771,8 @@ def run_audits(
             rid0, why0 = cache.cache_misses[0]
             print(f"  {forget_id}: {n} cached output file(s) were unreadable and were recomputed "
                   f"and overwritten -- e.g. {rid0}: {why0}. If this is most of them, the "
-                  f"forgetcheck-stage6 dataset was probably uploaded from symlinks rather than "
-                  f"their targets; check with: find /kaggle/input -name '*.npz' -size -1k | wc -l",
+                  f"stage-6 dataset was probably uploaded from symlinks rather than their "
+                  f"targets; check with: find /kaggle/input -name '*.npz' -size -1c | wc -l",
                   flush=True)
         if cache.missing:
             uniq = sorted(set(cache.missing))

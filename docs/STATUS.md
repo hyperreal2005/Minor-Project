@@ -1271,6 +1271,38 @@ that dataset version holds no usable caches, and the re-runs simply recompute (f
 ~45 s per model at 500, ~3 min at 3000). Nothing else is affected — records are Parquet written
 in-session and were never symlinks at upload time.
 
+## Kaggle input paths: never type one again (18 Sep 2026)
+
+The diagnostic I gave for the empty-cache problem used `/kaggle/input/forgetcheck-stage6`, a path
+typed from memory; the real mount is nested deeper (the current layout puts datasets under an
+owner/slug hierarchy) and `find` reported "No such file or directory". Second time — the CIFAR
+restore had failed the same way for the folder name. **Nothing in the code depends on the
+layout**: every restore is `Path("/kaggle/input").glob("**/<name>")`, which is why the stage6
+artifacts were found and linked despite the wrong path in chat. The mistake lived only in
+what I told a person to type.
+
+Made structural rather than remembered:
+
+- `_restore_all` now **prints the real source path** for every dataset it links from, and
+  **counts zero-byte files at restore time**, printing a loud warning naming the first one. An
+  upload made from symlinks is now visible in the setup cell, not thirty failures later.
+- `04_audit.ipynb` has a new cell before `status`: the `/kaggle/input` directory tree to depth 4,
+  plus layout-agnostic counts of zero-byte files, record shards and cached outputs across *all*
+  inputs. Every diagnostic starts from `/kaggle/input` and searches; none names a dataset.
+- The runner's hint for unreadable caches searches from `/kaggle/input` too.
+
+The empty-cache cause itself is unchanged by this: zero-byte `.npz` files are what a version
+uploaded from symlinks produces, and the new setup-cell counter is how to confirm it.
+
+**The layout, confirmed from a real file** (`.../forgetcheck-cifar10/batches.meta`):
+
+    /kaggle/input/datasets/<owner>/<slug>/<contents>
+    e.g. /kaggle/input/datasets/pranitdeepsingh/forgetcheck-stage6/artifacts/outputs/*.npz
+
+Four levels to the contents; the inspection cell's `-maxdepth 4` covers it. The recursive
+`**/<name>` globs in the setup cell match at this depth, which is why the restores had been
+working while the typed diagnostic was not.
+
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 
 Checkpoints and records are complete and consistent. One thing is **not** settled, and it affects
