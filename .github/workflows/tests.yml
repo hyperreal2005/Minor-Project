@@ -31,8 +31,13 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Run tests
-        # CIFAR-10 (170 MB) is not committed, so the 21 tests marked `requires_data` skip here
-        # and 244 run. Everything that guards the binding contracts -- run ids, the record
-        # schema, the metric registry, the unlearning method logic -- runs on synthetic data and
-        # is covered. The memorization scores are committed, so nothing skips on their account.
-        run: pytest -q -rs
+        # CIFAR-10 (170 MB) is not committed, so the tests marked `requires_data` skip here.
+        # Everything that guards the binding contracts -- run ids, the record schema, the metric
+        # registry, the unlearning method logic, the Stage 6 runner glue -- runs on synthetic
+        # data and is covered. The memorization scores are committed, so nothing skips on their
+        # account.
+        #
+        # Bare `pytest`, deliberately, and reproduce failures locally the same way. `python -m
+        # pytest` adds the working directory to sys.path and masks import mistakes that bare
+        # `pytest` -- and therefore this job -- rejects. Two commits went red on exactly that.
+        run: pytest -rs

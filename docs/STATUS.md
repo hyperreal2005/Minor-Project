@@ -1196,6 +1196,20 @@ in the paper's own protocol, and SDE re-runs from the cache on CPU if it is ever
 
 Account 3 resumes with the same command: the ten finished models are skipped, the rest run.
 
+## CI red on two commits — an import that only worked under `python -m pytest` (18 Sep 2026)
+
+Three Stage 6 runner tests imported shared fixtures as `from tests.test_audits_e2e import _Ctx`
+(behind a `sys.path.insert(0, tmp_path.parent)` that pointed at the wrong directory and did
+nothing). That resolves only when the repository root is on `sys.path`, which `python -m pytest`
+arranges and bare `pytest` — the CI command — does not. Locally I had run the `-m` form every
+time; CI failed with `ModuleNotFoundError: No module named 'tests'`.
+
+Fixed properly: the shared helpers (`_bundle`, `_Ctx`, `_seed_store`) live in
+`tests/stage6_fixtures.py`, a plain module pytest puts on the path however it is launched, and
+both the e2e and runner tests import it directly. **Run `venv/Scripts/pytest.exe -rs` locally,
+not `python -m pytest`** — the workflow comment now says so. 485 pass under bare `pytest`, the
+five `slow` tests pass under `-m slow`.
+
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 
 Checkpoints and records are complete and consistent. One thing is **not** settled, and it affects

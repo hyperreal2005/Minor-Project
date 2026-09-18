@@ -380,10 +380,7 @@ class TestCanaryLabels:
         Stage 6 run evaluated it on the clean bundle, which inverted RMIA (0.14-0.30) and pointed
         the relearning anchors the wrong way. The condition cache must carry the same labels the
         models saw."""
-        import sys
-
-        sys.path.insert(0, str(tmp_path.parent))
-        from tests.test_audits_e2e import _Ctx
+        from stage6_fixtures import _Ctx
         from forgetcheck.audits.probes import build_probes
         from forgetcheck.audits.runner import _ConditionCache
 
@@ -403,10 +400,7 @@ class TestCanaryLabels:
                                       cache.bundle.train_y[probes.retain])
 
     def test_a_non_canary_condition_keeps_the_clean_bundle(self, tmp_path):
-        import sys
-
-        sys.path.insert(0, str(tmp_path.parent))
-        from tests.test_audits_e2e import _Ctx
+        from stage6_fixtures import _Ctx
         from forgetcheck.audits.probes import build_probes
         from forgetcheck.audits.runner import _ConditionCache
 
@@ -425,10 +419,7 @@ class TestUndefinedRows:
 
     @staticmethod
     def _ctx_with_two_undefined(tmp_path):
-        import sys
-
-        sys.path.insert(0, str(tmp_path.parent))
-        from tests.test_audits_e2e import _Ctx
+        from stage6_fixtures import _Ctx
 
         return _Ctx(tmp_path)
 
@@ -470,10 +461,7 @@ class TestWriteFailureIsPerTarget:
     def test_a_record_error_fails_one_model_not_the_session(self, tmp_path, capsys, monkeypatch):
         """A RecordError on model 11 of 30 once ended the run; the remaining nineteen were never
         attempted. The write now sits inside the per-target handler."""
-        import sys
-
-        sys.path.insert(0, str(tmp_path.parent))
-        from tests.test_audits_e2e import _Ctx, _seed_store
+        from stage6_fixtures import _Ctx, _seed_store
         from forgetcheck.audits import runner
         from forgetcheck.registry.records import RecordError
 
