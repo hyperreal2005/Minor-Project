@@ -28,7 +28,7 @@ genuinely unresolved — as opposed to merely unwritten.
 > Plan stage 4 is "write the unlearning methods"; queue stage 4 is shadows. Read the CLI's
 > `status` output for the queue meaning.
 
-**Test suite: 485 passing** (+5 `slow`, incl. the Stage 6 end-to-end) (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
+**Test suite: 485 passing** (+6 `slow`, incl. the Stage 6 end-to-end) (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
 
 ---
 
@@ -1247,6 +1247,29 @@ All three are safe now: per-audit shards mean a re-run of one audit touches one 
 and the combined shards from the first pass are split on first write. Behavioral, representation
 and SDE rows for the other seven conditions, and privacy rows for the seven non-canary
 conditions, stand as they are.
+
+## canary re-run failed 30/30 on an empty cache file (18 Sep 2026)
+
+`EOFError: No data left in file` on every model, instantly — `np.load` on a zero-byte `.npz` in
+the outputs cache. Two defects:
+
+**Mine.** `_from_cache` said "corrupt file: recompute rather than trust" and caught only
+`StoreError`. A corrupt `.npz` raises `EOFError` / `BadZipFile` / `ValueError`, none of which is a
+`StoreError`, so the exception failed the model instead. A cache exists to save a forward pass and
+must never be able to fail a model: it now catches everything, records the reason, recomputes, and
+`_to_cache` overwrites the bad file. A per-condition line reports how many cache files were
+unreadable. An end-to-end test truncates a cache file to zero bytes and asserts the model still
+audits and the file is repaired.
+
+**Probable upstream cause.** Zero-byte files are what a dataset version made from **symlinks**
+produces: the session restores the stage6 dataset by symlink into the store, and a staging step
+that hard-links (`os.link` does not follow symlinks) or zips without dereferencing uploads the
+pointers, not the data. The notebook's upload cell uses `copytree(symlinks=False)` for exactly
+this reason; a hand-rolled staging cell from Stage 5 would not. Check on Kaggle with
+`find /kaggle/input/forgetcheck-stage6 -name '*.npz' -size -1k | wc -l`. If it is most of them,
+that dataset version holds no usable caches, and the re-runs simply recompute (first-pass cost:
+~45 s per model at 500, ~3 min at 3000). Nothing else is affected — records are Parquet written
+in-session and were never symlinks at upload time.
 
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 

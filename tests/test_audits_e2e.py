@@ -122,3 +122,26 @@ def test_legacy_combined_shards_are_split_not_duplicated(tmp_path, capsys):
     got = df[df["run_id"] == target]
     assert len(got) == rows_before, "rows were duplicated or lost in migration"
     assert not shard_path(ctx.records_dir, target, suffix="audit").exists()
+
+
+def test_an_unreadable_cache_file_is_recomputed_not_fatal(tmp_path, capsys):
+    """An empty `.npz` in the outputs cache -- what a dataset upload of symlinks produces --
+    failed all 30 canary models with EOFError. A cache must never be able to fail a model."""
+    from forgetcheck.audits.runner import run_audits
+
+    ctx = _Ctx(tmp_path)
+    target = _seed_store(ctx)
+    run_audits(ctx, device="cpu", batch_size=64)
+    capsys.readouterr()
+
+    # Truncate the cache to zero bytes, as a zipped symlink comes back.
+    ctx.store.outputs_path(target).write_bytes(b"")
+    assert ctx.store.has_outputs(target)
+
+    rc = run_audits(ctx, device="cpu", batch_size=64, audits=["behavior"], force=True)
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "0 targets failed" in out
+    assert "unreadable" in out and "EOFError" in out
+    assert ctx.store.outputs_path(target).stat().st_size > 0, "the bad file must be overwritten"
+    ctx.store.load_outputs(target, forget_id="rand-500")  # and readable again

@@ -168,6 +168,7 @@ class _ConditionCache:
         self._relearn_anchors: dict[int, dict[str, dict[str, np.ndarray]]] = {}
         self._randinit_curve: dict[str, np.ndarray] | None = None
         self.missing: list[str] = []  # reference checkpoints this store does not hold
+        self.cache_misses: list[tuple[str, str]] = []  # unreadable cache files, recomputed
 
     def _eval(self, rid, *, with_activations=False, cache: bool = False) -> ModelOutputs | None:
         """Evaluate a reference model, reading the on-disk cache when ``cache`` is set.
@@ -194,8 +195,15 @@ class _ConditionCache:
         return out
 
     def _from_cache(self, rid, *, with_activations) -> ModelOutputs | None:
-        from ..registry.store import StoreError
+        """The cached outputs, or ``None`` -- meaning recompute -- for *any* reason at all.
 
+        A cache exists to save a forward pass; it must never be able to fail a model. The first
+        version caught only `StoreError` (wrong condition), and an empty `.npz` -- which is what
+        a dataset upload that zipped symlinks instead of their targets produces -- raised
+        `EOFError: No data left in file` straight through, failing all 30 canary models on a
+        re-run that needed no cache at all. Whatever is wrong with the file, the answer is the
+        same: say so once, recompute, and let `_to_cache` overwrite it.
+        """
         try:
             logits, labels = self.ctx.store.load_outputs(rid, forget_id=self.forget_id)
             acts = {}
@@ -204,8 +212,9 @@ class _ConditionCache:
                     return None
                 acts, _ = self.ctx.store.load_activations(rid)
             return ModelOutputs(logits=logits, labels=labels, activations=acts)
-        except StoreError:
-            return None  # wrong condition or corrupt file: recompute rather than trust
+        except Exception as exc:  # noqa: BLE001 -- deliberately broad, see docstring
+            self.cache_misses.append((rid, f"{type(exc).__name__}: {exc}"))
+            return None
 
     def _to_cache(self, rid, out: ModelOutputs) -> None:
         self.ctx.store.save_outputs(rid, out.logits, out.labels, forget_id=self.forget_id)
@@ -757,6 +766,14 @@ def run_audits(
             written += len(records)
             print(f" {len(records)} records in {time.perf_counter() - t0:.1f}s", flush=True)
 
+        if cache.cache_misses:
+            n = len(cache.cache_misses)
+            rid0, why0 = cache.cache_misses[0]
+            print(f"  {forget_id}: {n} cached output file(s) were unreadable and were recomputed "
+                  f"and overwritten -- e.g. {rid0}: {why0}. If this is most of them, the "
+                  f"forgetcheck-stage6 dataset was probably uploaded from symlinks rather than "
+                  f"their targets; check with: find /kaggle/input -name '*.npz' -size -1k | wc -l",
+                  flush=True)
         if cache.missing:
             uniq = sorted(set(cache.missing))
             print(f"  {forget_id}: {len(uniq)} reference checkpoint(s) not in this store, "
