@@ -37,9 +37,12 @@ def test_run_audits_end_to_end(tmp_path, capsys):
     assert set(got["audit"]) == set(audit_names()), (
         f"audits with no rows for the target: {set(audit_names()) - set(got['audit'])}"
     )
-    # Relearning anchors are recorded under their own run_ids, not the target's.
+    # Relearning anchors are recorded under their own run_ids, not the target's, and the
+    # random-init floor rides with the seed-0 oracle's anchors.
     anchors = df[(df["audit"] == "relearning") & (df["run_id"] != target)]
     assert set(anchors["role"]) == {"oracle", "base"}, anchors[["run_id", "metric"]]
+    floor = anchors[anchors["metric"] == "relearn_randinit_auc"]
+    assert len(floor) == 1 and floor["role"].iloc[0] == "oracle"
 
     # The caches Stage 6 is supposed to leave behind.
     assert ctx.store.has_outputs(target)

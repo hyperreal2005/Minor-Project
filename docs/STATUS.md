@@ -18,7 +18,7 @@ genuinely unresolved — as opposed to merely unwritten.
 | 3 — Base models & oracles | A | **DONE, EXECUTED** | ✅ 62/62 trained on Kaggle; seed-SD gate passes |
 | 4 — Unlearning methods | A, B | **DONE** | Six methods + SSD behind one interface |
 | 5 — Full-pipeline pilot | all | **COMPLETE** | ✅ 240/240 from final implementations; cross-account consistency verified |
-| 6 — Audits | B, C | **RUNNING** | `rand-500` complete and clean; 7 conditions to go |
+| 6 — Audits | B, C | **FIRST PASS DONE** | 240/240; three targeted re-runs pending (canary labels, rand-5000 SDE, relearning anchors) |
 | 7 — Calibration & validity | D | not started | — |
 | 8 — Analysis | D | not started | — |
 
@@ -1209,6 +1209,44 @@ Fixed properly: the shared helpers (`_bundle`, `_Ctx`, `_seed_store`) live in
 both the e2e and runner tests import it directly. **Run `venv/Scripts/pytest.exe -rs` locally,
 not `python -m pytest`** — the workflow comment now says so. 485 pass under bare `pytest`, the
 five `slow` tests pass under `-m slow`.
+
+## Stage 6 first pass complete — 240/240, and the re-run list (18 Sep 2026)
+
+All eight conditions audited; 9,175 rows. Account 3's two conditions came in clean with the
+per-audit shards and the anchor-gap guard live: `relearn_norm` is NaN across mem-low, as it
+should be, and rand-3000 sits where rand-2500 and rand-500 sit.
+
+**mem-low is the negative control behaving as designed.** `js_to_oracle` 0.001–0.004 for four
+methods; nothing to forget, nothing forgotten. Population MIA still reads 0.65–0.70 there — the
+easiest examples are *more* confident than typical test data, and a threshold calls that
+membership — and RMIA sits at 0.41–0.47 for everything: the target (all data) is systematically
+more confident than the half-data shadows on *test* examples too, so member ratios lose. That
+offset is in the oracle as well, which is what `closer_to_oracle` is for. **`neggradplus` has the
+lowest non-collapsed CKA anywhere, 0.706, at mem-low**, where its outputs barely moved:
+representation and behaviour disagree, a row for the disagreement matrix.
+
+**`relearn_norm` is defined but still extreme on rand-* for the collapsed control** (−11 to −49):
+the anchor gap there is 0.02–0.03, barely over the guard. It is *interpretable* only at mem-high
+and canary; Stage 8 should report the raw anchor differences on the rand-* conditions rather
+than the ratio. Decide the threshold there, once, with all anchors in hand.
+
+**The random-init floor is now recorded** (`relearn_randinit_auc`, under the seed-0 oracle's
+anchor shard). The plan's gate "original ≈ 1, oracle ≈ 0" is 1 and 0 *by definition* for the
+normalised metric; the check with content is floor < oracle < original, and the floor was
+computed and thrown away. The relearning re-run below captures it.
+
+### What is re-run, why, and in what order
+
+| what | why | cost |
+|---|---|---|
+| canary-500, all six audits | audited on clean labels; privacy and relearning rows are wrong | ~40 min, GPU |
+| rand-5000, SDE only | sample-size artefact (+0.50 margins) | ~50 min, **CPU, from cache** |
+| relearning, all conditions | base-anchor shards collided; guard applied on 2 of 3 accounts only; floor never recorded | ~1 h per account, sharded |
+
+All three are safe now: per-audit shards mean a re-run of one audit touches one file per model,
+and the combined shards from the first pass are split on first write. Behavioral, representation
+and SDE rows for the other seven conditions, and privacy rows for the seven non-canary
+conditions, stand as they are.
 
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 

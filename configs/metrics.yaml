@@ -193,6 +193,18 @@ reversibility:
     oracle_ref: true
     probe_sets: [forget]
     doc: Optimisation steps to recover 80% of M0's step-0 forget-set performance.
+  relearn_randinit_auc:
+    family: reversibility
+    direction: lower_better
+    oracle_ref: false
+    probe_sets: [forget]
+    doc: >
+      Area under the relearning curve of a freshly initialised network on the same
+      reintroduction batches -- the floor. A protocol constant per condition, recorded once under
+      the seed-0 oracle's anchor shard, not a property of any unlearned model; `direction` is
+      declared because the registry requires one and is not meaningful here. The gate with
+      content is relearn_randinit_auc < relearn_auc(oracle) < relearn_auc(original): the ratio
+      form of the two anchors is 0 and 1 by construction and checks nothing.
   relearn_utility_drop:
     family: reversibility
     direction: lower_better

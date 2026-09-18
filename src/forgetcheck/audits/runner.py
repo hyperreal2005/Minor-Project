@@ -305,6 +305,10 @@ class _ConditionCache:
             "oracle": run_id(role="oracle", forget=self.forget_id, seed=seed, seed_kind="train"),
             "original": base_run_id_for(spec, seed),
         }
+        fields = spec.as_record_fields()
+        fields["forget_size"] = int(self.probes.forget.size)
+        common = dict(audit="relearning", probe_set="forget", n_probe=int(self.probes.forget.size),
+                      audit_seed=int(self.ctx.seeds.get("audit", 0)), **fields)
         out = []
         for arm, rid in ids.items():
             curve = arms.get(arm)
@@ -313,15 +317,21 @@ class _ConditionCache:
             auc = curve_auc(curve["steps"], curve["forget_acc"])
             if not np.isfinite(auc):
                 continue
-            fields = spec.as_record_fields()
-            fields["forget_size"] = int(self.probes.forget.size)
             out.append(make_record(
-                run_id=rid, audit="relearning", metric="relearn_auc", probe_set="forget",
-                value=float(auc), n_probe=int(self.probes.forget.size),
-                audit_seed=int(self.ctx.seeds.get("audit", 0)),
-                notes=f"relearning anchor arm '{arm}' for condition {self.forget_id}",
-                **fields,
+                run_id=rid, metric="relearn_auc", value=float(auc),
+                notes=f"relearning anchor arm '{arm}' for condition {self.forget_id}", **common,
             ))
+        # The random-init floor: one per condition, recorded with the seed-0 oracle's anchors.
+        # Without it the protocol check that has content -- floor < oracle < original -- cannot
+        # be made from records; the normalised form of the two anchors is 0 and 1 by definition.
+        rand = arms.get("randinit")
+        if seed == 0 and rand and "oracle" in ids:
+            auc = curve_auc(rand["steps"], rand["forget_acc"])
+            if np.isfinite(auc):
+                out.append(make_record(
+                    run_id=ids["oracle"], metric="relearn_randinit_auc", value=float(auc),
+                    notes=f"random-init relearning floor for condition {self.forget_id}", **common,
+                ))
         return out
 
     def relearn_anchors(self, seed: int) -> dict[str, dict[str, np.ndarray]]:
