@@ -130,17 +130,21 @@ def _restore_all(name, dest):
         return False
     linked = dup = empty = 0
     empty_example = None
+    empty_parquet = []
     for src_root in found:
         n_here = 0
         for src in src_root.rglob("*"):
             if not src.is_file():
                 continue
-            # A zero-byte file in a dataset is almost always a symlink that was zipped as a
-            # pointer instead of its target. Link it anyway (the runner recomputes unreadable
-            # caches), but say so HERE, at restore time, not thirty failures later.
-            if src.stat().st_size == 0:
+            # Count zero-byte files, but say only what is known. `.gitkeep` and friends are
+            # empty by design; a `.parquet` of zero bytes is a lost record shard; a `.npz` of
+            # zero bytes is a cache the runner recomputes. One empty oracle activation file
+            # once failed all 30 targets of a condition, so it is worth seeing at restore time.
+            if src.stat().st_size == 0 and not src.name.startswith("."):
                 empty += 1
                 empty_example = empty_example or src
+                if src.suffix == ".parquet":
+                    empty_parquet.append(src.name)
             target = dest / src.relative_to(src_root)
             if target.exists() or target.is_symlink():
                 dup += 1
@@ -155,9 +159,13 @@ def _restore_all(name, dest):
     print(f"{name}: linked {linked} files from {len(found)} dataset(s)"
           + (f", {dup} already present" if dup else ""))
     if empty:
-        print(f"!! {name}: {empty} ZERO-BYTE files, e.g. {empty_example}")
-        print("!! That dataset version was uploaded from symlinks, not their targets. Cached")
-        print("!! outputs will be recomputed; records would be LOST -- check the .parquet count.")
+        print(f"!! {name}: {empty} zero-byte file(s), e.g. {empty_example}")
+        if empty_parquet:
+            print(f"!! {len(empty_parquet)} of them are RECORD SHARDS and their rows are lost "
+                  f"in this version -- attach an earlier version. e.g. {empty_parquet[0]}")
+        else:
+            print("!! None are record shards. Empty cache files are recomputed and overwritten "
+                  "by the audit runner; nothing is lost.")
     return True
 
 # Restore CIFAR-10 by locating its *contents*, not its folder name.

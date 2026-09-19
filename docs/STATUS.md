@@ -1303,6 +1303,20 @@ Four levels to the contents; the inspection cell's `-maxdepth 4` covers it. The 
 `**/<name>` globs in the setup cell match at this depth, which is why the restores had been
 working while the typed diagnostic was not.
 
+## The empty-cache cause, seen (19 Sep 2026)
+
+The self-diagnosing setup cell answered it on the next session: **4 zero-byte files** out of 560
+in the stage6 artifacts, one of them `activations/c10r18__oracle__canary-500__none__train1.npz`.
+Not a symlink upload — that would have emptied all 560 — and I should not have asserted a cause
+I could not see. Whatever produced those four, the mechanism that turned them into 30 failures is
+clear: the oracle ensemble is loaded inside each target's try-block and cached only on success,
+so one unreadable oracle file fails target 1, is retried and fails target 2, and so on through
+the condition. The fail-safe cache fix recomputes and overwrites them on the next run.
+
+The `results` warning was a false alarm on `.gitkeep` placeholders, which are zero bytes by
+design. The check now skips dotfiles, separates record shards (lost rows — attach an earlier
+version) from cache files (recomputed — nothing lost), and no longer names a cause.
+
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 
 Checkpoints and records are complete and consistent. One thing is **not** settled, and it affects
