@@ -305,9 +305,16 @@ class ArtifactStore:
         labels: Mapping[str, np.ndarray],
         *,
         forget_id: str,
+        label_scheme: str = "clean",
         dtype: str = "float32",
     ) -> Path:
         """Store a model's logits and labels on each audit probe set.
+
+        ``label_scheme`` is part of the cache key alongside ``forget_id``. The labels stored here
+        are what the attacks read, and for the canary condition they are the *corrupted* ones
+        the models were trained on. A cache written under clean labels and served for the
+        corrupted-label audit reproduced the clean-label privacy numbers to three decimals while
+        everything around it had changed -- because the key said nothing about labels.
 
         float32, unlike activations. The first Kaggle audit run raised `overflow encountered in
         cast` on the collapsed neggrad control: sixty steps of unbounded gradient ascent leave
@@ -323,7 +330,10 @@ class ArtifactStore:
         if not logits:
             raise StoreError(f"{run_id}: refusing to save an empty output set")
         np_dtype = np.float16 if dtype == "float16" else np.float32
-        payload: dict[str, np.ndarray] = {"forget_id": np.array(forget_id)}
+        payload: dict[str, np.ndarray] = {
+            "forget_id": np.array(forget_id),
+            "label_scheme": np.array(label_scheme),
+        }
         for probe, arr in logits.items():
             a = np.asarray(arr)
             if a.ndim != 2:
@@ -336,12 +346,14 @@ class ArtifactStore:
         return path
 
     def load_outputs(
-        self, run_id: str, *, forget_id: str | None = None
+        self, run_id: str, *, forget_id: str | None = None, label_scheme: str | None = None
     ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
         """Return ``({probe: logits float32}, {probe: labels})``.
 
-        Raises if ``forget_id`` is given and does not match what was stored -- a cache hit for
-        the wrong condition is worse than a miss.
+        Raises if ``forget_id`` or ``label_scheme`` is given and does not match what was stored
+        -- a cache hit for the wrong condition or the wrong labels is worse than a miss. Files
+        written before ``label_scheme`` existed are treated as ``"clean"``, which is what they
+        were.
         """
         path = self.outputs_path(run_id)
         if not path.is_file():
@@ -351,6 +363,11 @@ class ArtifactStore:
             if forget_id is not None and stored != forget_id:
                 raise StoreError(
                     f"{run_id}: cached outputs are for condition {stored!r}, not {forget_id!r}"
+                )
+            scheme = str(z["label_scheme"]) if "label_scheme" in z.files else "clean"
+            if label_scheme is not None and scheme != label_scheme:
+                raise StoreError(
+                    f"{run_id}: cached outputs carry {scheme!r} labels, not {label_scheme!r}"
                 )
             logits = {k[len("logits__"):]: z[k].astype(np.float32)
                       for k in z.files if k.startswith("logits__")}

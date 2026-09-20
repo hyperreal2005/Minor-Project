@@ -276,3 +276,37 @@ class TestOutputsCache:
         st = self._store(tmp_path)
         st.save_outputs(self.RID, {"forget": np.zeros((5, 10))}, {}, forget_id="rand-500")
         assert st.usage()["outputs"][0] == 1
+
+    def test_a_cache_written_under_clean_labels_is_refused_for_the_canary_audit(self, tmp_path):
+        """The canary re-run reproduced the clean-label privacy numbers to three decimals: the
+        outputs cache was keyed on (run_id, condition) only, so `--force` re-audited cached
+        logits whose labels were the clean ones from the first pass. Labels are part of the
+        content; the label scheme is part of the key."""
+        import numpy as np
+        import pytest
+
+        from forgetcheck.registry import StoreError
+
+        st = self._store(tmp_path)
+        rid = "c10r18__unlearn__canary-500__salun__train1"
+        st.save_outputs(rid, {"forget": np.zeros((5, 10))}, {"forget": np.arange(5)},
+                        forget_id="canary-500", label_scheme="clean")
+        with pytest.raises(StoreError, match="carry 'clean' labels, not 'canary'"):
+            st.load_outputs(rid, forget_id="canary-500", label_scheme="canary")
+        st.load_outputs(rid, forget_id="canary-500", label_scheme="clean")  # the right key works
+
+    def test_a_cache_without_a_label_scheme_counts_as_clean(self, tmp_path):
+        # Every cache written before the field existed was produced on the clean bundle.
+        import numpy as np
+        import pytest
+
+        from forgetcheck.registry import StoreError
+        from forgetcheck.registry.store import _atomic_savez
+
+        st = self._store(tmp_path)
+        rid = "c10r18__unlearn__canary-500__salun__train1"
+        _atomic_savez(st.outputs_path(rid), {"forget_id": np.array("canary-500"),
+                                              "logits__forget": np.zeros((5, 10))})
+        st.load_outputs(rid, forget_id="canary-500", label_scheme="clean")
+        with pytest.raises(StoreError):
+            st.load_outputs(rid, forget_id="canary-500", label_scheme="canary")

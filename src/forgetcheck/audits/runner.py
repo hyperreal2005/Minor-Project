@@ -32,7 +32,7 @@ from .probes import ProbeSpec, build_probes
 
 __all__ = [
     "AuditTarget", "available_targets", "audit_one", "run_audits", "ModelOutputs",
-    "shard_conditions", "already_audited", "audited_audits",
+    "shard_conditions", "already_audited", "audited_audits", "migrate_legacy_shards",
 ]
 
 
@@ -155,8 +155,10 @@ class _ConditionCache:
             from ..data.cifar import apply_canaries
 
             self.bundle, _ = apply_canaries(ctxobj.bundle, probes.forget)
+            self.label_scheme = "canary"
         else:
             self.bundle = ctxobj.bundle
+            self.label_scheme = "clean"
         self.layers = layers
         self.device = device
         self.batch_size = batch_size
@@ -205,7 +207,9 @@ class _ConditionCache:
         same: say so once, recompute, and let `_to_cache` overwrite it.
         """
         try:
-            logits, labels = self.ctx.store.load_outputs(rid, forget_id=self.forget_id)
+            logits, labels = self.ctx.store.load_outputs(
+                rid, forget_id=self.forget_id, label_scheme=self.label_scheme
+            )
             acts = {}
             if with_activations:
                 if not self.ctx.store.has_activations(rid):
@@ -217,7 +221,9 @@ class _ConditionCache:
             return None
 
     def _to_cache(self, rid, out: ModelOutputs) -> None:
-        self.ctx.store.save_outputs(rid, out.logits, out.labels, forget_id=self.forget_id)
+        self.ctx.store.save_outputs(
+            rid, out.logits, out.labels, forget_id=self.forget_id, label_scheme=self.label_scheme
+        )
         if out.activations:
             probe_ids = np.concatenate([self.probes.mixed_train, self.probes.mixed_test])
             self.ctx.store.save_activations(rid, out.activations, probe_ids=probe_ids)
@@ -682,6 +688,24 @@ def _write_target(ctxobj, t: AuditTarget, forget_id: str, todo, records) -> None
         write_records(rows, ctxobj.records_dir, suffix=suffix)
 
 
+def migrate_legacy_shards(ctxobj, targets: Iterable[AuditTarget]) -> int:
+    """Split every combined `<run_id>--audit.parquet` into per-audit shards. Returns the count.
+
+    The step that makes a selective re-run *resumable*. `--force` redoes everything it is given
+    on every restart. The alternative -- delete one audit's shards and run without force, so a
+    restart skips what is done -- only works once the combined shards from the first pass are
+    gone, because a combined shard still says that audit is done.
+    """
+    from ..registry.records import shard_path
+
+    n = 0
+    for t in targets:
+        if shard_path(ctxobj.records_dir, t.run_id, suffix="audit").is_file():
+            _migrate_legacy_shard(ctxobj, t.run_id, keep_out=set())
+            n += 1
+    return n
+
+
 def run_audits(
     ctxobj,
     *,
@@ -693,12 +717,17 @@ def run_audits(
     account: int = 1,
     of: int = 1,
     force: bool = False,
+    migrate_only: bool = False,
 ) -> int:
     """Audit this account's share of the conditions, grouped so caches are reused."""
     audits = tuple(audits or sorted(REGISTRY))
     targets = list(targets if targets is not None else available_targets(ctxobj.store))
     if not targets:
         print("no unlearn checkpoints in this store; nothing to audit")
+        return 0
+    if migrate_only:
+        n = migrate_legacy_shards(ctxobj, targets)
+        print(f"migrated {n} combined audit shard(s) into per-audit shards")
         return 0
 
     by_condition: dict[str, list[AuditTarget]] = {}

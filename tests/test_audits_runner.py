@@ -477,3 +477,19 @@ class TestWriteFailureIsPerTarget:
         assert rc == 1
         assert "FAILED: RecordError" in out
         assert "1 targets failed" in out
+
+
+class TestCanaryCacheKey:
+    def test_the_canary_cache_declares_its_labels(self, tmp_path):
+        from stage6_fixtures import _Ctx
+        from forgetcheck.audits.probes import build_probes
+        from forgetcheck.audits.runner import _ConditionCache
+
+        for fid, expect in (("canary-500", "canary"), ("rand-500", "clean")):
+            ctx = _Ctx(tmp_path / fid, forget_id=fid, n_forget=40)
+            probes = build_probes(forget_indices=ctx.forget_indices(fid), n_train=ctx.bundle.n_train,
+                                  n_test=ctx.bundle.n_test, forget_id=fid,
+                                  config=ctx.audits["representation"])
+            cache = _ConditionCache(ctx, forget_id=fid, probes=probes, layers=("layer4",),
+                                    device="cpu", batch_size=64)
+            assert cache.label_scheme == expect

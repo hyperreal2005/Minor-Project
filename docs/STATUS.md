@@ -28,7 +28,7 @@ genuinely unresolved — as opposed to merely unwritten.
 > Plan stage 4 is "write the unlearning methods"; queue stage 4 is shadows. Read the CLI's
 > `status` output for the queue meaning.
 
-**Test suite: 485 passing** (+6 `slow`, incl. the Stage 6 end-to-end) (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
+**Test suite: 488 passing** (+7 `slow`, incl. the Stage 6 end-to-end) (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
 
 ---
 
@@ -1316,6 +1316,47 @@ the condition. The fail-safe cache fix recomputes and overwrites them on the nex
 The `results` warning was a false alarm on `.gitkeep` placeholders, which are zero bytes by
 design. The check now skips dotfiles, separates record shards (lost rows — attach an earlier
 version) from cache files (recomputed — nothing lost), and no longer names a cause.
+
+## The canary re-run fixed relearning and not privacy — a cache-key bug (20 Sep 2026)
+
+After the corrupted-label fix, canary `relearn_norm` moved as expected (l1sparse 0.504 → 0.283,
+neggrad +6.2 → −0.84: 0 = retrain-like, 1 = M₀-like, finally meaningful). But `mia_auc_pop`
+came back **identical to three decimals** to the clean-label run, and RMIA moved only by the
+all-32-shadows-OUT change. The population attack's loss feature depends on labels; identical
+numbers meant identical labels.
+
+**Cause.** The outputs cache stores logits *and labels*, keyed on (run_id, condition). Both were
+unchanged, so `--force` re-ran the privacy audits on cached outputs still carrying the clean
+labels from the first pass. Relearning was unaffected because it reads the bundle directly, not
+the cache. The cache key said nothing about what determined the content.
+
+**Fix.** `label_scheme` (`clean` / `canary`) is stored with the outputs and checked on load;
+files written before the field existed count as `clean`, which they were. The condition cache
+sets it from the spec, so every canary cache from the first pass is now rejected and recomputed.
+Two store tests pin the refusal and the legacy default; a runner test pins the scheme per
+condition. Also: the population attacker's sigmoid is `scipy.special.expit`, which does not
+overflow on the collapsed control's logits (a warning, not a defect, but noise in the log).
+
+**What is stale now:** the canary-500 `privacy_population` and `privacy_rmia` rows only.
+Behavioral, representation and SDE are label-free; relearning already used the right labels.
+Re-run: `audit --audits privacy_population,privacy_rmia --forget canary-500 --force` (~25 min;
+the forward passes recompute, then two cheap audits). The four unreadable cache files reported
+this session were recomputed as intended.
+
+The check cell's "unexpected: anything else" line was stale: every method is undefined at mem-low
+by design (`relearn_norm`'s anchors coincide). It now says so and lists only genuinely unexpected
+rows with their `notes`.
+
+## Resumable re-runs: `--migrate`, then delete, then run without `--force` (20 Sep 2026)
+
+`--force` redoes everything it is given on every restart; a dead session at model 150 of 240
+costs 150 models. The resumable path: split the first-pass combined shards into per-audit
+shards (`audit --migrate`), delete the one audit's shards (`find ... -delete`), run *without*
+force. A restart then skips what is done. The migration is the necessary first step because a
+combined shard still reports that audit as done. An end-to-end test walks the whole sequence,
+restart included.
+
+Reserve `--force` for short jobs (canary privacy, ~25 min; SDE at rand-5000).
 
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 

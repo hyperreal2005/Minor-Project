@@ -675,9 +675,13 @@ if len(short):
     print("!! models missing audits:", len(short), "-- e.g.", short.index[0])
 
 if "audit_undefined" in aud["metric"].values:
-    who = aud[aud["metric"] == "audit_undefined"]["method"].value_counts()
-    print("undefined values by method:", who.to_dict(),
-          "<-- expected: neggrad; unexpected: anything else")
+    und = aud[aud["metric"] == "audit_undefined"]
+    print("undefined values by method:", und["method"].value_counts().to_dict())
+    print("  expected: neggrad everywhere (relearn_t80 never recovers); EVERY method at mem-low")
+    print("  (relearn_norm's anchors coincide there, by design). Anything else, look at `notes`:")
+    other = und[(und["method"] != "neggrad") & (und["forget_id"] != "mem-low-3000")]
+    if len(other):
+        print(other[["run_id", "audit", "notes"]].to_string(index=False))
 """
 
 PUSH_AUDIT = """\

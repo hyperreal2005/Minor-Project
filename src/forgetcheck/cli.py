@@ -435,6 +435,7 @@ def cmd_audit(args) -> int:
         ctx, targets=targets, audits=names, device=args.device,
         batch_size=int(ctx.audits.get("behavior", {}).get("batch_size", 512)),
         dry_run=args.dry_run, account=args.account, of=args.of, force=args.force,
+        migrate_only=args.migrate,
     )
 
 
@@ -525,7 +526,10 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--of", type=int, default=1,
                    help="how many accounts share the audit; conditions are split, not models")
     a.add_argument("--force", action="store_true",
-                   help="re-audit models whose audit records already exist")
+                   help="re-audit models whose audit records already exist (not resumable)")
+    a.add_argument("--migrate", action="store_true",
+                   help="split first-pass combined audit shards into per-audit shards and exit; "
+                        "then deleting one audit's shards and running WITHOUT --force is resumable")
     a.set_defaults(func=cmd_audit)
 
     q.add_argument("--force", action="store_true",

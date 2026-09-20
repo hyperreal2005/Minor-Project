@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import numpy as np
 from scipy.optimize import minimize
+from scipy.special import expit
 
 from .base import UNDEFINED, Audit, AuditContext, register, softmax
 
@@ -170,7 +171,7 @@ def cross_validated_scores(
             continue
         xtr, xte = _standardise(features[train], features[test])
         w, b = _fit_logistic(xtr, is_member[train])
-        scores[test] = 1.0 / (1.0 + np.exp(-(xte @ w + b)))
+        scores[test] = expit(xte @ w + b)  # stable: no overflow on the collapsed control
     return scores
 
 

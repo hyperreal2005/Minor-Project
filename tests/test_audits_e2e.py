@@ -145,3 +145,40 @@ def test_an_unreadable_cache_file_is_recomputed_not_fatal(tmp_path, capsys):
     assert "unreadable" in out and "EOFError" in out
     assert ctx.store.outputs_path(target).stat().st_size > 0, "the bad file must be overwritten"
     ctx.store.load_outputs(target, forget_id="rand-500")  # and readable again
+
+
+def test_migrate_then_delete_one_audit_is_a_resumable_redo(tmp_path, capsys):
+    """The resumable alternative to --force: migrate combined shards, delete one audit's shards,
+    run without force. A restart must skip models already redone."""
+    from forgetcheck.audits import audit_names
+    from forgetcheck.audits.runner import audited_audits, run_audits
+    from forgetcheck.registry.records import shard_path
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    ctx = _Ctx(tmp_path)
+    target = _seed_store(ctx)
+    run_audits(ctx, device="cpu", batch_size=64)
+
+    # Rebuild the first-pass layout: one combined shard.
+    tables = []
+    for f in sorted(ctx.records_dir.glob(f"{target}--audit-*.parquet")):
+        tables.append(pq.read_table(f)); f.unlink()
+    pq.write_table(pa.concat_tables(tables), shard_path(ctx.records_dir, target, suffix="audit"))
+    capsys.readouterr()
+
+    assert run_audits(ctx, migrate_only=True) == 0
+    assert "migrated 1 combined" in capsys.readouterr().out
+    assert not shard_path(ctx.records_dir, target, suffix="audit").exists()
+    assert audited_audits(ctx, target) == set(audit_names())
+
+    shard_path(ctx.records_dir, target, suffix="audit-relearning").unlink()
+    assert "relearning" not in audited_audits(ctx, target)
+
+    rc = run_audits(ctx, device="cpu", batch_size=64, audits=["relearning"])  # no force
+    out = capsys.readouterr().out
+    assert rc == 0 and "records in" in out
+    assert "relearning" in audited_audits(ctx, target)
+
+    rc = run_audits(ctx, device="cpu", batch_size=64, audits=["relearning"])  # the "restart"
+    assert "already audited" in capsys.readouterr().out
