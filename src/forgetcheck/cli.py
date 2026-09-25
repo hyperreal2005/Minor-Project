@@ -422,7 +422,7 @@ def cmd_audit(args) -> int:
     if unknown:
         raise SystemExit(f"unknown audit(s) {unknown}; known: {sorted(REGISTRY)}")
 
-    targets = available_targets(ctx.store, forget=args.forget)
+    targets = available_targets(ctx.store, role=args.role, forget=args.forget)
     if args.methods:
         wanted = set(args.methods.split(","))
         targets = [t for t in targets if t.method in wanted]
@@ -522,6 +522,9 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--forget", default=None, help="restrict to one forget condition")
     a.add_argument("--methods", default=None, help="comma-separated methods")
     a.add_argument("--seeds", default=None, help="comma-separated seeds")
+    a.add_argument("--role", default="unlearn", choices=["unlearn", "oracle", "base"],
+                   help="which checkpoints to audit; 'oracle' is Stage 7's null band -- genuine "
+                        "retrains passed through the same audits as candidates")
     a.add_argument("--account", type=int, default=1, help="1-based account index")
     a.add_argument("--of", type=int, default=1,
                    help="how many accounts share the audit; conditions are split, not models")

@@ -182,3 +182,61 @@ def test_migrate_then_delete_one_audit_is_a_resumable_redo(tmp_path, capsys):
 
     rc = run_audits(ctx, device="cpu", batch_size=64, audits=["relearning"])  # the "restart"
     assert "already audited" in capsys.readouterr().out
+
+
+def test_an_oracle_audited_as_a_candidate_is_excluded_from_its_own_reference(tmp_path, capsys):
+    """Stage 7's null band comes from auditing genuine retrains. The reference ensemble at every
+    condition IS the paired oracles, so a paired oracle scored against all of them is compared
+    with itself -- one JS divergence of exactly 0, one CKA of exactly 1 -- and the band comes out
+    tighter than the truth, making every audit look more valid than it is."""
+    import torch
+
+    from forgetcheck.audits.probes import build_probes
+    from forgetcheck.audits.runner import _ConditionCache
+    from forgetcheck.models.resnet import make_resnet18
+    from forgetcheck.registry import run_id
+
+    ctx = _Ctx(tmp_path)
+    ctx.base["oracles"]["paired_seeds"] = [0, 1]
+    torch.manual_seed(0)
+    ids = [run_id(role="oracle", forget="rand-500", seed=s, seed_kind="train") for s in (0, 1)]
+    for rid in ids:
+        ctx.store.save_checkpoint(rid, make_resnet18(num_classes=K).state_dict(),
+                                  train_seed=0, hparams_sha="e2e")
+
+    probes = build_probes(forget_indices=ctx.forget_indices("rand-500"),
+                          n_train=ctx.bundle.n_train, n_test=ctx.bundle.n_test,
+                          forget_id="rand-500", config=ctx.audits["representation"])
+    cache = _ConditionCache(ctx, forget_id="rand-500", probes=probes, layers=("layer4",),
+                            device="cpu", batch_size=64)
+
+    full, _ = cache.oracles()
+    assert len(full["forget"]) == 2, "both oracles form the reference for an unlearned model"
+
+    loo, loo_acts = cache.oracles(exclude=ids[0])
+    assert len(loo["forget"]) == 1, "a candidate must not be in its own reference"
+    assert len(loo_acts["layer4"]) == 1
+    # And the forward passes are shared, not repeated, between the two views.
+    assert len(cache._oracle_by_rid) == 2
+
+    # A candidate that is not in the ensemble keeps the whole reference.
+    other, _ = cache.oracles(exclude="c10r18__oracle__rand-500__none__oracle209")
+    assert len(other["forget"]) == 2
+
+
+def test_an_ensemble_oracle_has_no_paired_original_and_borrows_anchors(tmp_path):
+    """Seeds 200-211 are independent retrains that pair with no base model. Asking for one would
+    invent a checkpoint; `js_to_original` is simply undefined for them."""
+    from forgetcheck.audits.probes import build_probes
+    from forgetcheck.audits.runner import _ConditionCache
+
+    ctx = _Ctx(tmp_path)
+    probes = build_probes(forget_indices=ctx.forget_indices("rand-500"),
+                          n_train=ctx.bundle.n_train, n_test=ctx.bundle.n_test,
+                          forget_id="rand-500", config=ctx.audits["representation"])
+    cache = _ConditionCache(ctx, forget_id="rand-500", probes=probes, layers=("layer4",),
+                            device="cpu", batch_size=64)
+    ctx.seeds = {"audit": 0, "train": [0]}
+
+    assert cache.original(209) is None
+    assert not cache.missing, "a phantom checkpoint must not be reported as missing"

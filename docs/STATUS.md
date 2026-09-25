@@ -18,7 +18,7 @@ genuinely unresolved — as opposed to merely unwritten.
 | 3 — Base models & oracles | A | **DONE, EXECUTED** | ✅ 62/62 trained on Kaggle; seed-SD gate passes |
 | 4 — Unlearning methods | A, B | **DONE** | Six methods + SSD behind one interface |
 | 5 — Full-pipeline pilot | all | **COMPLETE** | ✅ 240/240 from final implementations; cross-account consistency verified |
-| 6 — Audits | B, C | **FIRST PASS DONE** | 240/240; three targeted re-runs pending (canary labels, rand-5000 SDE, relearning anchors) |
+| 6 — Audits | B, C | **COMPLETE** | ✅ 240/240, all six audits, every re-run landed; 9,238 rows |
 | 7 — Calibration & validity | D | not started | — |
 | 8 — Analysis | D | not started | — |
 
@@ -28,7 +28,7 @@ genuinely unresolved — as opposed to merely unwritten.
 > Plan stage 4 is "write the unlearning methods"; queue stage 4 is shadows. Read the CLI's
 > `status` output for the queue meaning.
 
-**Test suite: 488 passing** (+7 `slow`, incl. the Stage 6 end-to-end) (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
+**Test suite: 488 passing** (+9 `slow`, incl. the Stage 6 end-to-end) (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
 
 ---
 
@@ -1357,6 +1357,75 @@ combined shard still reports that audit as done. An end-to-end test walks the wh
 restart included.
 
 Reserve `--force` for short jobs (canary privacy, ~25 min; SDE at rand-5000).
+
+## STAGE 6 COMPLETE (21 Sep 2026)
+
+240/240 models, six audits each, 9,238 rows, eight random-init floors. All three re-runs landed
+and did what they were for:
+
+- **Canary privacy, corrupted labels.** Population MIA 0.67–0.85 → **0.94–0.96**; RMIA moved;
+  `neggrad` RMIA 0.48 → **0.896**. The recompute I could not confirm from timings is confirmed by
+  the numbers.
+- **rand-5000 SDE**: +0.50 → −0.005..+0.024. The size artefact is gone.
+- **Relearning everywhere**: per-condition anchors, guard applied uniformly, floors recorded.
+  `relearn_norm` is now NaN at rand-500 too (gaps 0.017–0.019 < 0.02); 180 defined rows.
+
+### How to read the canary row — against the oracle, never against 0.5
+
+- **Population MIA ≈ 0.95 for every method** is *label separability*. Canaries carry wrong
+  labels (high loss), test examples right ones (low loss), and a trained attacker exploits that
+  regardless of memory. The oracle will score ≈ 0.95 too; Stage 7 measures it. This is the
+  population-attack critique [21] in its purest form.
+- **RMIA 0.14–0.22, below chance**, is the full-data target being *more* confident in the true
+  class than half-data shadows — the mem-low offset (0.41–0.47) amplified by a wrong label.
+- **`neggrad` RMIA 0.896** is a reference-prior artefact: a constant predictor gives identical
+  p(y) to both groups, but p̃(y) is ~0.01 for a wrong label and ~0.9 for a true one, so the
+  ratio-of-ratios reads "member" for a model that knows nothing. Correct verdict, wrong reason,
+  and the flip from ≈ 0.5 at every other condition is itself an audit-validity result about RMIA.
+
+### Residuals carried into Stage 7
+
+- **40 stale `relearn_auc` rows** (360 where 320 are expected) from first-pass anchor shards
+  named `--relearn-anchor.parquet`, which the cleanup pattern missed. Duplicates of the
+  per-condition anchors, superseded. The audit notebook's setup now removes them; the Stage 7
+  loader must ignore that legacy suffix.
+- **`relearn_norm` on rand-2500/3000/5000 and mem-med is defined but extreme for `neggrad`**
+  (−7 to −13; gaps just over 0.02). Interpretable at mem-high and canary; Stage 8 should report
+  raw anchor differences on the rand-* conditions.
+- **`neggradplus` at mem-high and rand-500 loses > 5 pp utility during relearning** —
+  "recovery void" in `notes`, all seeds. A real property of the method, to report.
+
+## Stage 7 shape, and the leave-one-out the null band needs (25 Sep 2026)
+
+**No new notebook for the compute.** Auditing a retrained oracle is the same operation as
+auditing an unlearned model — same probes, same references, same records — so Stage 7's first
+half is `04_audit.ipynb` with `--role oracle`. Its second half, calibration, reads records only
+and runs on CPU.
+
+**The correctness issue found while scoping it.** The reference ensemble at every condition is
+the five *paired* oracles. Audit a paired oracle against that set and it is compared with
+itself: one JS divergence of exactly 0, one CKA of exactly 1, one perfect prediction agreement.
+The null band would come out tighter than the truth and **every audit would score as more valid
+than it is** — the precise failure `oracle_fpr` exists to detect. `oracles(exclude=run_id)` now
+drops the candidate from its own reference; forward passes are still shared, so the cost is
+unchanged. The twelve ensemble oracles (seeds 200-211) are not in the paired set, need no
+exclusion, and are scored against all five — the same reference the 240 unlearned models used,
+which is what makes their scores comparable to them.
+
+Two smaller consequences of oracles-as-candidates, both handled:
+
+- **Ensemble oracles pair with no base model.** `original(209)` returned a phantom and polluted
+  the missing-checkpoint report; it now returns `None`, and `js_to_original` is undefined for
+  them, which is correct — they are independent retrains, not any M0's counterpart.
+- **Relearning anchors for an unpaired seed** fall back to the condition's first train seed.
+  Both anchors are then genuine models of the right kind, and `relearn_norm` answers what Stage 7
+  needs: does an independent retrain relearn like the anchor retrain? A *paired* oracle audited
+  as a candidate is its own oracle anchor, so its `relearn_norm` is 0 by construction — a
+  protocol check, not a measurement, and the reason the twelve independent ones matter.
+
+**Candidates: 52.** 40 paired (5 × 8 conditions, leave-one-out) + 12 ensemble at the primary
+condition. Their outputs are already cached from Stage 6, so the pass is much cheaper than the
+240-model one; relearning is the only part that trains.
 
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 

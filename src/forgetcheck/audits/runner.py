@@ -162,8 +162,8 @@ class _ConditionCache:
         self.layers = layers
         self.device = device
         self.batch_size = batch_size
-        self._oracles: dict[str, np.ndarray] | None = None
-        self._oracle_acts: dict[str, np.ndarray] | None = None
+        self._oracle_by_rid: dict[str, ModelOutputs] | None = None
+        self._oracle_stacks: dict[str | None, tuple[dict, dict]] = {}
         self._originals: dict[int, ModelOutputs] = {}
         self._refs: dict[str, np.ndarray] | None = None
         self._ref_mask: dict[str, np.ndarray] | None = None
@@ -356,6 +356,16 @@ class _ConditionCache:
         anchors are computed five times rather than thirty. The random-init arm is a per-condition
         protocol check (configs/audits.yaml `randinit_sanity_check`) and is computed once.
         """
+        # A candidate with no paired M0 -- an ensemble oracle, seeds 200-211 -- borrows the
+        # condition's first train seed's anchors. Both anchors are then genuine models of the
+        # right kind for this condition, just not this candidate's own counterparts, and
+        # `relearn_norm` answers the question Stage 7 needs: does an independent retrain relearn
+        # like the anchor retrain does? A paired oracle audited as a candidate is its own oracle
+        # anchor, so its relearn_norm is 0 by construction -- a protocol check, not a measurement.
+        train_seeds = set(self.ctx.seeds.get("train", ()))
+        if seed not in train_seeds and train_seeds:
+            seed = min(train_seeds)
+
         if seed not in self._relearn_anchors:
             from ..unlearn import base_run_id_for
 
@@ -378,29 +388,64 @@ class _ConditionCache:
             self._relearn_anchors[seed] = arms
         return self._relearn_anchors[seed]
 
-    def oracles(self) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
-        if self._oracles is None:
-            logits: dict[str, list[np.ndarray]] = {}
-            acts: dict[str, list[np.ndarray]] = {}
+    def _oracle_outputs(self) -> dict[str, ModelOutputs]:
+        """The paired oracles' outputs, evaluated once, keyed by run_id."""
+        if self._oracle_by_rid is None:
+            self._oracle_by_rid = {}
             for seed in self.ctx.base["oracles"]["paired_seeds"]:
                 rid = run_id(role="oracle", forget=self.forget_id, seed=seed, seed_kind="train")
                 got = self._eval(rid, with_activations=True, cache=True)
-                if got is None:
-                    continue
-                for k, v in got.logits.items():
+                if got is not None:
+                    self._oracle_by_rid[rid] = got
+        return self._oracle_by_rid
+
+    def oracles(
+        self, *, exclude: str | None = None
+    ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+        """The reference ensemble, optionally **without** one member.
+
+        Leave-one-out matters the moment an oracle is itself audited, which is what Stage 7 does
+        to obtain the null band. The ensemble at every condition is the five paired oracles, so
+        auditing paired oracle *s* against all five compares it with itself: one JS divergence of
+        exactly 0, one CKA of exactly 1. The band would come out tighter than the truth and every
+        audit would look more valid than it is. The candidate is excluded instead, leaving four.
+
+        The twelve ensemble oracles at the primary condition are not in the paired set, so they
+        need no exclusion and are scored against all five -- the same reference the 240 unlearned
+        models were scored against, which is what makes their scores comparable to them.
+        """
+        if exclude not in self._oracle_stacks:
+            by_rid = self._oracle_outputs()
+            members = [o for rid, o in by_rid.items() if rid != exclude]
+            logits: dict[str, list[np.ndarray]] = {}
+            acts: dict[str, list[np.ndarray]] = {}
+            for o in members:
+                for k, v in o.logits.items():
                     logits.setdefault(k, []).append(v)
-                for k, v in got.activations.items():
+                for k, v in o.activations.items():
                     acts.setdefault(k, []).append(v)
-            self._oracles = {k: np.stack(v) for k, v in logits.items()}
-            self._oracle_acts = {k: np.stack(v) for k, v in acts.items()}
-        return self._oracles, self._oracle_acts
+            self._oracle_stacks[exclude] = (
+                {k: np.stack(v) for k, v in logits.items()},
+                {k: np.stack(v) for k, v in acts.items()},
+            )
+        return self._oracle_stacks[exclude]
 
     def original(self, seed: int) -> ModelOutputs | None:
+        """The paired M0 for a train seed, or ``None`` for a candidate that has none.
+
+        The twelve ensemble oracles carry seeds 200-211 and pair with no base model -- they are
+        independent retrains, not the counterpart of any particular M0. Asking for one would add
+        a phantom to `missing` and print a warning about a checkpoint that was never meant to
+        exist; `js_to_original` is simply undefined for them, which the audit already handles.
+        """
         if seed not in self._originals:
             from ..unlearn import base_run_id_for
 
-            spec = self.ctx.spec(self.forget_id)
-            self._originals[seed] = self._eval(base_run_id_for(spec, seed))
+            if seed not in set(self.ctx.seeds.get("train", ())):
+                self._originals[seed] = None
+            else:
+                spec = self.ctx.spec(self.forget_id)
+                self._originals[seed] = self._eval(base_run_id_for(spec, seed))
         return self._originals[seed]
 
     def references(self) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
@@ -462,7 +507,8 @@ def audit_one(
     state, meta = ctxobj.store.load_checkpoint(target.run_id)
     outputs = cache._eval(target.run_id, with_activations=needs_acts, cache=True)
 
-    oracle_logits, oracle_acts = cache.oracles()
+    # Leave-one-out whenever the candidate is itself in the reference ensemble.
+    oracle_logits, oracle_acts = cache.oracles(exclude=target.run_id)
     original = cache.original(target.seed)
     refs, ref_mask = cache.references()
 

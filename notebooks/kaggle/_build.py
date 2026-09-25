@@ -609,6 +609,17 @@ SETUP_AUDIT = SETUP.replace(
     'for _name in ("artifacts", "results"):\n    if not _restore_all(_name, REPO_DIR / _name):',
 )
 assert SETUP_AUDIT != SETUP, "the restore loop in SETUP changed shape; update SETUP_AUDIT"
+SETUP_AUDIT += """
+# Stage 6's first pass named relearning-anchor shards without the condition, and the five clean
+# base models serve seven conditions each, so those files hold a collided, superseded subset.
+# The per-condition shards (`--relearn-anchor-<cond>`) replaced them; the old ones are removed
+# so they cannot duplicate rows in a snapshot. They are symlinks here; the source is untouched.
+_stale = list((REPO_DIR / "results").rglob("*--relearn-anchor.parquet"))
+for _f in _stale:
+    _f.unlink()
+if _stale:
+    print(f"removed {len(_stale)} superseded first-pass anchor shard(s)")
+"""
 
 INSPECT_AUDIT = """\
 from forgetcheck.registry import read_records
