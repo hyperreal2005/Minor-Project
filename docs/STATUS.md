@@ -28,7 +28,7 @@ genuinely unresolved — as opposed to merely unwritten.
 > Plan stage 4 is "write the unlearning methods"; queue stage 4 is shadows. Read the CLI's
 > `status` output for the queue meaning.
 
-**Test suite: 521 passing** (+10 `slow`, incl. the Stage 6 end-to-end) (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
+**Test suite: 521 passing** (+11 `slow`, incl. the Stage 6 end-to-end) (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
 
 ---
 
@@ -1499,6 +1499,31 @@ M0 power, low-discriminability, holdout check — each with k, n, CI) · `flags`
 model and metric: calibrated and native verdict — Stage 8's input) · `canary` (ground-truth
 statistics and label per canary model) · `canary_validity` (each audit's TPR/TNR/balanced
 accuracy against the ground truth).
+
+## Stage 7 step 1 ran old code — and what re-tracing the real run found (26 Sep 2026)
+
+`audit --forget canary-500` printed "all targets already audited": the Stage 7 code had not been
+pushed, so the session cloned `5032e43`, whose runner knows nothing of ground truth. Harmless —
+nothing was written. Re-tracing steps 2–3 against the *real* data before they spend GPU time found
+three more things:
+
+- **Phantom anchor rows for ensemble oracles.** `relearn_anchors` borrowed seed 0's anchors for
+  seeds 200–211, but `anchor_records` built the row run_ids from the raw seed:
+  `…__oracle__…__train200`, `…__base__full__none__train200` — checkpoints that do not exist. Twelve
+  ensemble oracles would have written 24 such rows, counted by calibration as twelve extra oracles
+  and twelve extra M0s, all copies of seed 0: a collapsed `relearn_auc` band at the primary
+  condition, silently. One `_anchor_seed()` now serves both. The synthetic Stage 7 test had used
+  paired oracles only; a new one audits an ensemble oracle (which sorts *first*, so it is the one
+  that writes the shared anchors) and asserts every relearning row names a real checkpoint. It was
+  verified to **fail** with the fix reverted.
+- **`pd.NA` in the null check.** Calibration tested for missing `oracle_seed` with `x != x`, which
+  raises on `pd.NA`. Whether a nullable integer comes back as NaN or pd.NA depends on the pandas
+  and pyarrow versions, and Kaggle's differ from the laptop's. Now `pd.isna`.
+- **The install cell could not follow a push within a session.** On an existing clone, `git fetch`
+  updates `origin/main` but `git checkout main` stays on the old local branch, so re-running the
+  notebook after a push kept the previous code. Now checks out `origin/<branch>` detached (falling
+  back to a sha), in all six notebooks. The `pinned at <sha>` line is the check: it must show the
+  commit that was pushed.
 
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 

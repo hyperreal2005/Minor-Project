@@ -26,7 +26,6 @@ suppressing them would erase the difficulty axis the project is partly about.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -124,9 +123,17 @@ def _is_ensemble_oracle(row) -> bool:
 
 
 def _isnan(x) -> bool:
+    """True for None, NaN and pd.NA alike.
+
+    Whether a nullable integer column comes back as float NaN or as pd.NA depends on the pandas
+    and pyarrow versions, and Kaggle's are not the laptop's. `x != x` works for NaN and raises
+    on pd.NA ("boolean value of NA is ambiguous"); pd.isna handles every case.
+    """
+    import pandas as pd
+
     try:
-        return x is None or (isinstance(x, float) and math.isnan(x)) or (x != x)
-    except Exception:
+        return bool(pd.isna(x))
+    except (TypeError, ValueError):
         return False
 
 

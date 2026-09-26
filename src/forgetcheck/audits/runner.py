@@ -331,6 +331,22 @@ class _ConditionCache:
 
         return evaluate
 
+    def _anchor_seed(self, seed: int) -> int:
+        """The train seed whose anchors a candidate uses: its own, or -- for a candidate with no
+        paired M0, i.e. an ensemble oracle, seeds 200-211 -- the condition's first train seed.
+
+        One function, used by both `relearn_anchors` and `anchor_records`. They once resolved it
+        separately: the curves came from seed 0 while the rows were written under run_ids built
+        from seed 200 -- `...__oracle__...__train200`, `...__base__full__none__train200`,
+        checkpoints that do not exist. Twelve ensemble oracles would have added 24 phantom rows,
+        which calibration would have counted as twelve extra oracles and twelve extra M0s, all
+        copies of seed 0, collapsing the relearn_auc band at the primary condition. Silently.
+        """
+        train_seeds = set(self.ctx.seeds.get("train", ()))
+        if seed not in train_seeds and train_seeds:
+            return min(train_seeds)
+        return seed
+
     def anchor_records(self, seed: int) -> list:
         """The oracle and original arms' own curve AUCs, as records under their own run_ids.
 
@@ -342,6 +358,7 @@ class _ConditionCache:
         from ..unlearn import base_run_id_for
         from .relearning import curve_auc
 
+        seed = self._anchor_seed(seed)
         if getattr(self, "_anchor_written", None) is None:
             self._anchor_written = set()
         if seed in self._anchor_written:
@@ -396,9 +413,7 @@ class _ConditionCache:
         # `relearn_norm` answers the question Stage 7 needs: does an independent retrain relearn
         # like the anchor retrain does? A paired oracle audited as a candidate is its own oracle
         # anchor, so its relearn_norm is 0 by construction -- a protocol check, not a measurement.
-        train_seeds = set(self.ctx.seeds.get("train", ()))
-        if seed not in train_seeds and train_seeds:
-            seed = min(train_seeds)
+        seed = self._anchor_seed(seed)
 
         if seed not in self._relearn_anchors:
             from ..unlearn import base_run_id_for

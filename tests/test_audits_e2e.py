@@ -310,3 +310,39 @@ def test_stage7_oracles_m0_and_canary_ground_truth_end_to_end(tmp_path, capsys):
     # Two oracles are too few for a band (MIN_BAND_N = 3): calibrated rates must be absent, not
     # zero -- a rate computed from nothing would read as a perfect audit.
     assert "calibrated_fpr" not in v.columns or v["calibrated_fpr"].isna().all()
+
+
+def test_an_ensemble_oracle_writes_anchors_only_under_real_run_ids(tmp_path, capsys):
+    """Ensemble oracles (seeds 200-211) have no paired M0 and borrow seed 0's anchors. The curves
+    were borrowed correctly, but the anchor rows were written under run_ids built from the raw
+    seed -- `...__train200` -- which do not exist: phantom 'oracles' and 'M0s' that calibration
+    would have counted, collapsing the relearn_auc band. Every anchor row must name a real
+    checkpoint, and calibration must read the ensemble oracle's null oracle_seed correctly."""
+    import torch
+
+    from forgetcheck.audits.runner import available_targets, run_audits
+    from forgetcheck.calibrate import CalibrationConfig, calibrate, load_audit_records
+    from forgetcheck.models.resnet import make_resnet18
+    from forgetcheck.registry import run_id
+    from forgetcheck.registry.metrics import default_registry
+
+    ctx = _Ctx(tmp_path)
+    target = _seed_store(ctx)                       # unlearn target, oracle0, base0, 2 shadows
+    ens = run_id(role="oracle", forget="rand-500", seed=200, seed_kind="oracle")
+    torch.manual_seed(7)
+    ctx.store.save_checkpoint(ens, make_resnet18(num_classes=K).state_dict(),
+                              train_seed=0, hparams_sha="e2e")
+
+    oracles = available_targets(ctx.store, role="oracle")
+    assert [t.run_id for t in oracles][0] == ens, "the ensemble oracle must come first to test this"
+    assert run_audits(ctx, targets=oracles, device="cpu", batch_size=64) == 0, capsys.readouterr().out
+
+    df = load_audit_records(ctx.records_dir)
+    phantom = df[df["run_id"].str.contains("train200")]
+    assert phantom.empty, phantom[["run_id", "metric", "notes"]]
+    for rid in df.loc[df["audit"] == "relearning", "run_id"].unique():
+        assert ctx.store.has_checkpoint(rid), f"relearning row under a non-existent model: {rid}"
+
+    tables = calibrate(df, registry=default_registry(),
+                       config=CalibrationConfig(primary_condition="rand-500"))
+    assert len(tables["validity"]) > 0

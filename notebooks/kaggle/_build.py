@@ -43,7 +43,13 @@ os.chdir("/kaggle/working")
 if not Path("Minor-Project").exists():
     !git clone --quiet $REPO
 %cd /kaggle/working/Minor-Project
-!git fetch --quiet --all && git checkout --quiet $COMMIT
+# Check out the FETCHED ref, not the local branch. In a session that already has the clone,
+# `git checkout main` stays on the old local main -- `fetch` updates only origin/main -- so a
+# re-run after a push silently kept executing the previous code, and the only sign was the
+# "pinned at" line below. `origin/<branch>` follows the push; a sha falls through to the second
+# form. Compare the printed sha with the commit you pushed.
+!git fetch --quiet --all
+!git checkout --quiet --detach origin/$COMMIT 2>/dev/null || git checkout --quiet --detach $COMMIT
 !git log -1 --format="pinned at %h  %s"
 !pip install -q -e .
 """
