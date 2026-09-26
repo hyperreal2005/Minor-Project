@@ -240,3 +240,73 @@ def test_an_ensemble_oracle_has_no_paired_original_and_borrows_anchors(tmp_path)
 
     assert cache.original(209) is None
     assert not cache.missing, "a phantom checkpoint must not be reported as missing"
+
+
+def _seed_canary_store(ctx):
+    """Canary condition: two oracles, one M0, one unlearned model, two shadows."""
+    import torch
+
+    from forgetcheck.models.resnet import make_resnet18
+    from forgetcheck.registry import run_id
+    from forgetcheck.unlearn import base_run_id_for
+
+    ctx.base["oracles"]["paired_seeds"] = [0, 1]
+    ids = {
+        "unlearn": "c10r18__unlearn__canary-500__finetune__train0",
+        "oracle0": run_id(role="oracle", forget="canary-500", seed=0, seed_kind="train"),
+        "oracle1": run_id(role="oracle", forget="canary-500", seed=1, seed_kind="train"),
+        "base": base_run_id_for(ctx.spec("canary-500"), 0),
+        "shadow0": run_id(role="shadow", forget="full", seed=0, seed_kind="shadow"),
+        "shadow1": run_id(role="shadow", forget="full", seed=1, seed_kind="shadow"),
+    }
+    for i, rid in enumerate(ids.values()):
+        torch.manual_seed(i)
+        ctx.store.save_checkpoint(rid, make_resnet18(num_classes=K).state_dict(),
+                                  train_seed=0, hparams_sha="e2e")
+    return ids
+
+
+def test_stage7_oracles_m0_and_canary_ground_truth_end_to_end(tmp_path, capsys):
+    """The whole Stage 7 path through the real runner: unlearned models (already audited in
+    Stage 6), then oracles as candidates, then M0 under its condition -- with canary ground truth
+    emitted on the way through -- then calibration over the records they wrote."""
+    from forgetcheck.audits.runner import (
+        audited_audits, available_targets, base_targets, run_audits,
+    )
+    from forgetcheck.calibrate import CalibrationConfig, calibrate, load_audit_records
+    from forgetcheck.registry.metrics import default_registry
+
+    ctx = _Ctx(tmp_path, forget_id="canary-500", n_forget=40)
+    ids = _seed_canary_store(ctx)
+
+    # Stage 6 without ground truth, as it actually ran.
+    assert run_audits(ctx, device="cpu", batch_size=64, ground_truth=False) == 0
+    capsys.readouterr()
+
+    # A plain re-run now picks up ground truth for the already-audited model, auditing nothing.
+    assert run_audits(ctx, device="cpu", batch_size=64) == 0
+    out = capsys.readouterr().out
+    line = out.split(ids["unlearn"])[1].splitlines()[0]
+    assert "[ground truth only]" in line and " 3 records" in line, line
+
+    assert run_audits(ctx, targets=available_targets(ctx.store, role="oracle"),
+                      device="cpu", batch_size=64) == 0
+    m0 = base_targets(ctx)
+    assert [t.forget_id for t in m0] == ["canary-500"] and m0[0].role == "base"
+    assert run_audits(ctx, targets=m0, device="cpu", batch_size=64) == 0
+    assert audited_audits(ctx, ids["base"], condition="canary-500")
+
+    df = load_audit_records(ctx.records_dir)
+    gt = df[df["metric"] == "canary_top_wrong"]
+    assert set(gt["role"]) == {"unlearn", "oracle", "base"}, gt[["run_id", "role"]]
+
+    tables = calibrate(df, registry=default_registry(),
+                       config=CalibrationConfig(primary_condition="mem-high-3000"))
+    assert set(tables["canary"]["role"]) == {"unlearn", "oracle", "base"}
+    truth = tables["canary"].set_index("role")["ground_truth"]
+    assert truth["oracle"].tolist() == [False, False] and bool(truth["base"]) is True
+    v = tables["validity"]
+    assert {"native_fpr", "native_tpr"} <= set(v.columns)
+    # Two oracles are too few for a band (MIN_BAND_N = 3): calibrated rates must be absent, not
+    # zero -- a rate computed from nothing would read as a perfect audit.
+    assert "calibrated_fpr" not in v.columns or v["calibrated_fpr"].isna().all()

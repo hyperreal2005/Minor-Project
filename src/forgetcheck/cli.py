@@ -422,7 +422,12 @@ def cmd_audit(args) -> int:
     if unknown:
         raise SystemExit(f"unknown audit(s) {unknown}; known: {sorted(REGISTRY)}")
 
-    targets = available_targets(ctx.store, role=args.role, forget=args.forget)
+    if args.role == "base":
+        from .audits.runner import base_targets
+
+        targets = base_targets(ctx, forget=args.forget)
+    else:
+        targets = available_targets(ctx.store, role=args.role, forget=args.forget)
     if args.methods:
         wanted = set(args.methods.split(","))
         targets = [t for t in targets if t.method in wanted]
@@ -437,6 +442,32 @@ def cmd_audit(args) -> int:
         dry_run=args.dry_run, account=args.account, of=args.of, force=args.force,
         migrate_only=args.migrate,
     )
+
+
+def cmd_calibrate(args) -> int:
+    """Stage 7: bands, validity rates and per-model verdicts from the audit records. CPU only."""
+    from .calibrate import CalibrationConfig, calibrate, load_audit_records, write_tables
+    from .registry.metrics import default_registry
+
+    ctx = _ctx(args)
+    df = load_audit_records(ctx.records_dir)
+    tables = calibrate(df, registry=default_registry(), config=CalibrationConfig.from_context(ctx))
+    out = ctx.records_dir.parent / "calibration"
+    for path in write_tables(tables, out):
+        n = len(tables[path.stem])
+        print(f"  {path.stem:16s} {n:6d} rows -> {path}")
+
+    v = tables["validity"]
+    if len(v):
+        roles = df.groupby("role")["run_id"].nunique().to_dict()
+        print(f"\nmodels by role: {roles}")
+        cols = [c for c in ("forget_id", "audit", "metric", "native_fpr", "native_fpr_n",
+                            "calibrated_fpr", "calibrated_fpr_n", "m0_tpr",
+                            "low_discriminability") if c in v]
+        head = v[v["probe_set"].isin(["forget", "layer4"])][cols]
+        print("\nvalidity, forget probe (full table in validity.parquet):")
+        print(head.round(3).to_string(index=False))
+    return 0
 
 
 def cmd_status(args) -> int:
@@ -523,8 +554,8 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--methods", default=None, help="comma-separated methods")
     a.add_argument("--seeds", default=None, help="comma-separated seeds")
     a.add_argument("--role", default="unlearn", choices=["unlearn", "oracle", "base"],
-                   help="which checkpoints to audit; 'oracle' is Stage 7's null band -- genuine "
-                        "retrains passed through the same audits as candidates")
+                   help="which checkpoints to audit: 'oracle' = genuine retrains (Stage 7's "
+                        "negatives), 'base' = M0 under each condition it serves (positives)")
     a.add_argument("--account", type=int, default=1, help="1-based account index")
     a.add_argument("--of", type=int, default=1,
                    help="how many accounts share the audit; conditions are split, not models")
@@ -564,6 +595,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     st = sub.add_parser("status", help="what is in the store and what each stage still needs")
     st.set_defaults(func=cmd_status)
+
+    cal = sub.add_parser("calibrate", help="stage 7: bands and audit validity from the records")
+    cal.set_defaults(func=cmd_calibrate)
 
     fs = sub.add_parser("forget-sets", help="materialise and describe every forget condition")
     fs.set_defaults(func=cmd_forget_sets)

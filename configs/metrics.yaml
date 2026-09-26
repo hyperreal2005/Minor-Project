@@ -264,6 +264,23 @@ meta:
     oracle_ref: true
     probe_sets: [canary]
     doc: Fraction of canaries still predicted as their assigned wrong label.
+  # PROPOSED (25 Sep 2026), pending the four-person sign-off this file requires. Needed because
+  # canary_acc and canary_prob above mis-score the collapsed control -- see the doc.
+  canary_top_wrong:
+    family: meta
+    direction: closer_to_oracle
+    oracle_ref: true
+    probe_sets: [canary]
+    doc: >
+      Among the nine WRONG labels only, the fraction of canaries whose assigned label is the
+      model's favourite. canary_acc and canary_prob have a flaw the destroyed neggrad control
+      exposes: a model that knows nothing predicts the assigned label ~1 time in 10 by chance,
+      while the oracle -- confident in the true label -- almost never does, so the destroyed
+      model reads as "still remembers". Excluding the true label removes that confound: a model
+      with no memory sits at the oracle's natural-confusion rate (~1/9), a remembering one far
+      above it. Ground truth for an unlearned model is this value above the oracle band.
+      closer_to_oracle, not lower_better: below the oracle means the assigned label is being
+      specifically suppressed, which is over-forgetting.
   audit_undefined:
     family: meta
     direction: lower_better

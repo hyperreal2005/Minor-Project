@@ -797,6 +797,100 @@ def nb_audit() -> dict:
     ])
 
 
+INSPECT_CALIBRATION = """\
+import pandas as pd
+pd.set_option("display.width", 200)
+pd.set_option("display.max_rows", 200)
+
+v = pd.read_parquet("results/calibration/validity.parquet")
+fwd = v[v["probe_set"].isin(["forget", "layer4"])]
+
+print("NATIVE false-positive rate -- each retrain-free audit's own rule, applied to genuine retrains")
+print("(a valid rule flags ~5%; far above that means the rule, as commonly used, is broken)\\n")
+nat = fwd[fwd["native_rule"].notna()]
+print(nat.pivot_table(index="metric", columns="forget_id", values="native_fpr").round(2), "\\n")
+
+print("POWER -- fraction of M0 (which trained on the forget set) each audit detects")
+print("(low_discriminability = M0 sits inside the retrain band: the audit cannot tell them apart here)\\n")
+print(fwd.pivot_table(index="metric", columns="forget_id", values="m0_tpr").round(2), "\\n")
+
+print("CALIBRATED false-positive rate on held-out retrains -- should sit near nominal (0.02-0.05)")
+print("(this checks the calibration itself, not the audits)\\n")
+print(fwd.pivot_table(index="metric", columns="forget_id", values="calibrated_fpr").round(2))
+"""
+
+LOOK_CALIBRATION = """\
+### What to look for
+
+**Native FPR is the audit-validity result.** It applies each retrain-free audit's own rule --
+"MIA AUC significantly above 0.5 means leakage", SDE's verdict -- to models that provably never
+saw the forget set. Expect the population attack to flag most retrains at `mem-high` and
+`canary-500`: high-memorization and mislabelled examples are separable from test data by loss
+alone, membership or not. That is the finding, not a bug.
+
+**Calibrated FPR should be boring.** Near 0.02-0.05 everywhere, with wide intervals at the
+seven conditions that have five retrains. If it is far off, the band is wrong, and that must
+be fixed before Stage 8 uses it.
+
+**Power and low-discriminability together say where each audit can see anything at all.**
+Expect `mem-low` to be low-discriminability for almost everything: M0 and the retrain agree on
+easy examples, so there is nothing to detect.
+
+**The canary table is ground truth.** `canary_validity.parquet` scores every audit against
+residual influence measured directly. `canary_top_wrong` for the oracles should sit near 1/9
+and for M0 near 1.
+"""
+
+
+def nb_calibrate() -> dict:
+    header = (
+        "# 05 - Calibrate the audits\n\n"
+        "Stage 7. Three kinds of model go through the same six audits, and each answers a "
+        "different question: **retrained oracles** never saw the forget set (known negatives -- "
+        "the null band and each audit's false-positive rate); **M0** trained on it (known "
+        "positives -- each audit's power); and the **canary** condition's models are scored "
+        "against residual influence measured directly (ground truth by construction). Then the "
+        "calibration reads the records and writes the tables Stage 8 uses.\n\n"
+        "**Attach three datasets**: `forgetcheck-cifar10`, `forgetcheck-artifacts`, and "
+        "`forgetcheck-stage6` at its latest version. No `ACCOUNT` to set -- one account does "
+        "all of it.\n\n"
+        "**Every step is resumable.** If the session dies, start a fresh one, attach the same "
+        "datasets, and re-run from the top: finished models are skipped. Nothing here uses "
+        "`--force`.\n\n"
+        "Rough cost on a T4: step 1 a few minutes, step 2 (52 oracles) ~45 min, step 3 (40 M0 "
+        "runs) ~1 h, step 4 under a minute.\n"
+    )
+    config = (
+        'DEVICE = "cuda" if __import__("torch").cuda.is_available() else "cpu"\n'
+        'print(f"device {DEVICE}")\n'
+    )
+    return notebook([
+        md(header),
+        code(INSTALL),
+        code(SETUP_AUDIT),
+        code(config),
+        code("!find /kaggle/input -maxdepth 4 -type d | sort | head -40\n"
+             "!echo; echo 'record shards attached:'; find /kaggle/input -name '*.parquet' | wc -l\n"),
+        md("## Step 1 - canary ground truth for the 30 unlearned canary models\n\n"
+           "They were audited in Stage 6; this computes only the ground-truth statistics, from "
+           "the cached outputs. Every line should say `[ground truth only]` and `3 records`."),
+        code("!{CLI} --root . --device {DEVICE} audit --forget canary-500\n"),
+        md("## Step 2 - the retrained oracles as candidates\n\n"
+           "52 of them: five per condition, each scored against the other four, plus the twelve "
+           "independent retrains at `mem-high-3000`."),
+        code("!{CLI} --root . --device {DEVICE} audit --role oracle\n"),
+        md("## Step 3 - M0 under every condition it serves\n\n"
+           "40 runs: five seeds x eight conditions. The positive control."),
+        code("!{CLI} --root . --device {DEVICE} audit --role base\n"),
+        md("## Step 4 - calibrate\n\nCPU only, reads the records written above."),
+        code("!{CLI} --root . calibrate\n"),
+        md("## The results"),
+        code(INSPECT_CALIBRATION),
+        md(LOOK_CALIBRATION),
+        code(PUSH_AUDIT.replace('stage 6 account K', 'stage 7 calibration')),
+    ])
+
+
 def main() -> None:
     notebooks = {
         "00_verify_setup.ipynb": nb_verify(),
@@ -823,6 +917,7 @@ def main() -> None:
             LOOK_UNLEARN, CHECK_UNLEARN,
         ),
         "04_audit.ipynb": nb_audit(),
+        "05_calibrate.ipynb": nb_calibrate(),
     }
     for name, nb in notebooks.items():
         path = HERE / name

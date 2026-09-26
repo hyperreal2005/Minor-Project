@@ -33,6 +33,7 @@ from .probes import ProbeSpec, build_probes
 __all__ = [
     "AuditTarget", "available_targets", "audit_one", "run_audits", "ModelOutputs",
     "shard_conditions", "already_audited", "audited_audits", "migrate_legacy_shards",
+    "base_targets",
 ]
 
 
@@ -61,6 +62,39 @@ def available_targets(
             )
         )
     return out
+
+
+def base_targets(ctxobj, *, forget: str | None = None) -> list[AuditTarget]:
+    """The original model M0, once **per condition it serves**.
+
+    Stage 7's positive control. M0 trained on every forget set, so an audit that cannot tell it
+    from a retrain has no power at that condition. The five clean base models serve seven
+    conditions each and are audited under each one -- with that condition's probes -- which is
+    why their record shards carry the condition in the suffix and their outputs are never
+    written to the disk cache, whose key is the run_id alone.
+    """
+    from ..unlearn import base_run_id_for
+
+    conds = [forget] if forget else sorted(ctxobj.all_forget_ids())
+    out = []
+    for cond in conds:
+        spec = ctxobj.spec(cond)
+        for seed in ctxobj.seeds["train"]:
+            rid = base_run_id_for(spec, seed)
+            if ctxobj.store.has_checkpoint(rid):
+                out.append(AuditTarget(run_id=rid, forget_id=cond, method="none",
+                                       seed=int(seed), role="base"))
+    return out
+
+
+def _suffix(t: AuditTarget, kind: str) -> str:
+    """Shard suffix for a target's records of ``kind`` (an audit name, or 'ground-truth').
+
+    Base models are audited once per condition under one run_id, so the condition goes in the
+    suffix; every other role's run_id already names its condition.
+    """
+    stem = "ground-truth" if kind == "ground-truth" else f"audit-{kind}"
+    return f"{stem}-{t.forget_id}" if t.role == "base" else stem
 
 
 # --------------------------------------------------------------------------- forward passes
@@ -497,6 +531,7 @@ def audit_one(
     audits: Sequence[str],
     device: str = "cpu",
     batch_size: int = 512,
+    ground_truth: bool = False,
 ) -> list:
     """Audit one model and return its records."""
     spec = ctxobj.spec(target.forget_id)
@@ -505,12 +540,22 @@ def audit_one(
 
     needs_acts = any(get_audit(a).name == "representation" for a in audits)
     state, meta = ctxobj.store.load_checkpoint(target.run_id)
-    outputs = cache._eval(target.run_id, with_activations=needs_acts, cache=True)
+    # Base models serve several conditions under one run_id; the disk cache is keyed on run_id
+    # and would thrash between them, so M0 is evaluated fresh each time.
+    outputs = cache._eval(target.run_id, with_activations=needs_acts,
+                          cache=target.role != "base")
 
+    # References are loaded only for audits that need them: a ground-truth-only pass over
+    # already-audited canary models must not evaluate 32 shadows to compute three numbers.
+    need_oracles = any(get_audit(a).needs_oracles for a in audits)
+    need_refs = any(get_audit(a).needs_references for a in audits)
     # Leave-one-out whenever the candidate is itself in the reference ensemble.
-    oracle_logits, oracle_acts = cache.oracles(exclude=target.run_id)
-    original = cache.original(target.seed)
-    refs, ref_mask = cache.references()
+    oracle_logits, oracle_acts = cache.oracles(exclude=target.run_id) if need_oracles else ({}, {})
+    if target.role == "base":
+        original = outputs  # M0 is its own original; no second forward pass
+    else:
+        original = cache.original(target.seed) if "behavior" in audits else None
+    refs, ref_mask = cache.references() if need_refs else ({}, {})
 
     relearn_curves: dict[str, dict[str, np.ndarray]] = {}
     if "relearning" in audits:
@@ -519,7 +564,14 @@ def audit_one(
 
     records = []
     if "relearning" in audits:
-        records += cache.anchor_records(target.seed)
+        # An oracle or M0 audited as a candidate is also the relearning anchor for its own
+        # seed, so its anchor row and its method-arm row are the same model under the same
+        # protocol -- one measurement, twice, under one run_id, which the record key rejects.
+        # Keep the candidate's; its other anchor (the M0 for an oracle, and vice versa) stays.
+        records += [
+            r for r in cache.anchor_records(target.seed)
+            if not (r.run_id == target.run_id and r.metric == "relearn_auc")
+        ]
     skipped: list[str] = []
     for name in audits:
         audit = get_audit(name)
@@ -598,9 +650,34 @@ def audit_one(
                     notes=why, **common,
                 )
             )
+    if ground_truth and cache.spec.kind == "canary":
+        records += _ground_truth_records(target, cache, outputs, spec, meta, ctxobj)
     if skipped:
         print("\n      skipped: " + "; ".join(skipped), end="", flush=True)
     return records
+
+
+def _ground_truth_records(target, cache, outputs, spec, meta, ctxobj) -> list:
+    """Canary ground truth for one model: residual influence, measured directly.
+
+    Labels are taken from the bundles, never from the outputs cache: the true label from the
+    clean bundle, the assigned wrong label from the condition's canary-corrupted one. The forget
+    probe is sorted by index in every model, and so are these.
+    """
+    from ..calibrate.canary import canary_scores
+
+    f = cache.probes.forget
+    scores = canary_scores(outputs.logits["forget"], cache.ctx.bundle.train_y[f],
+                           cache.bundle.train_y[f])
+    fields = spec.as_record_fields()
+    fields["forget_size"] = int(f.size)
+    return [
+        make_record(run_id=target.run_id, audit="meta", metric=m, probe_set="canary",
+                    value=float(v), n_probe=int(f.size), hparams=meta.hparams_sha,
+                    checkpoint_sha=meta.sha, audit_seed=int(ctxobj.seeds.get("audit", 0)),
+                    notes="canary ground truth", **fields)
+        for m, v in scores.items() if np.isfinite(v)
+    ]
 
 
 def _config_for(name: str, audits_cfg: dict) -> dict:
@@ -652,7 +729,7 @@ def _audit_suffix(name: str) -> str:
     return f"audit-{name}"
 
 
-def audited_audits(ctxobj, run_id_: str) -> set[str]:
+def audited_audits(ctxobj, run_id_: str, *, condition: str | None = None) -> set[str]:
     """Which audits already have records for this model.
 
     One shard **per audit**, `<run_id>--audit-<name>.parquet`, so re-running one audit rewrites
@@ -670,9 +747,16 @@ def audited_audits(ctxobj, run_id_: str) -> set[str]:
 
         done |= set(pq.read_table(legacy, columns=["audit"])["audit"].to_pylist())
     for name in REGISTRY:
-        if shard_path(ctxobj.records_dir, run_id_, suffix=_audit_suffix(name)).is_file():
+        suffix = _audit_suffix(name) + (f"-{condition}" if condition else "")
+        if shard_path(ctxobj.records_dir, run_id_, suffix=suffix).is_file():
             done.add(name)
     return done
+
+
+def _has_ground_truth(ctxobj, t: AuditTarget) -> bool:
+    from ..registry.records import shard_path
+
+    return shard_path(ctxobj.records_dir, t.run_id, suffix=_suffix(t, "ground-truth")).is_file()
 
 
 def already_audited(ctxobj, run_id_: str, audits: Sequence[str] | None = None) -> bool:
@@ -730,7 +814,12 @@ def _write_target(ctxobj, t: AuditTarget, forget_id: str, todo, records) -> None
     for r in records:
         by_key.setdefault((r.run_id, r.audit), []).append(r)
     for (rid, audit_name), rows in by_key.items():
-        suffix = _audit_suffix(audit_name) if rid == t.run_id else f"relearn-anchor-{forget_id}"
+        if rid != t.run_id:
+            suffix = f"relearn-anchor-{forget_id}"
+        elif audit_name == "meta":
+            suffix = _suffix(t, "ground-truth")
+        else:
+            suffix = _suffix(t, audit_name)
         write_records(rows, ctxobj.records_dir, suffix=suffix)
 
 
@@ -764,6 +853,7 @@ def run_audits(
     of: int = 1,
     force: bool = False,
     migrate_only: bool = False,
+    ground_truth: bool = True,
 ) -> int:
     """Audit this account's share of the conditions, grouped so caches are reused."""
     audits = tuple(audits or sorted(REGISTRY))
@@ -788,9 +878,18 @@ def run_audits(
         # Per target, only the audits that are missing (or all of them under --force). A model
         # with five of six done gets the sixth, not a full redo.
         plan: list[tuple[AuditTarget, tuple[str, ...]]] = []
+        is_canary = ctxobj.spec(forget_id).kind == "canary"
+        gt_todo: set[str] = set()
         for t in group:
-            todo = audits if force else tuple(a for a in audits if a not in audited_audits(ctxobj, t.run_id))
-            if todo:
+            cond = t.forget_id if t.role == "base" else None
+            done = set() if force else audited_audits(ctxobj, t.run_id, condition=cond)
+            todo = tuple(a for a in audits if a not in done)
+            # Canary ground truth rides along with any pass over the canary condition, and is
+            # picked up on its own for models already audited -- from the cache, with no audit
+            # re-run -- so the 30 canary models from Stage 6 need no separate command.
+            if ground_truth and is_canary and (force or not _has_ground_truth(ctxobj, t)):
+                gt_todo.add(t.run_id)
+            if todo or t.run_id in gt_todo:
                 plan.append((t, todo))
             else:
                 skipped_done += 1
@@ -821,13 +920,19 @@ def run_audits(
         )
         for i, t in enumerate(group, 1):
             todo = todo_by_target[t.run_id]
-            tag = "" if len(todo) == len(audits) else f" [{', '.join(todo)}]"
+            if not todo:
+                tag = " [ground truth only]"
+            elif len(todo) == len(audits):
+                tag = ""
+            else:
+                tag = f" [{', '.join(todo)}]"
             print(f"  [{i}/{len(group)}] {t.run_id}{tag} ...", end="", flush=True)
             t0 = time.perf_counter()
             try:
                 records = audit_one(
                     t, ctxobj=ctxobj, cache=cache, audits=todo,
                     device=device, batch_size=batch_size,
+                    ground_truth=t.run_id in gt_todo,
                 )
                 _write_target(ctxobj, t, forget_id, todo, records)
             except Exception as exc:

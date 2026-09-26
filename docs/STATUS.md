@@ -19,7 +19,7 @@ genuinely unresolved — as opposed to merely unwritten.
 | 4 — Unlearning methods | A, B | **DONE** | Six methods + SSD behind one interface |
 | 5 — Full-pipeline pilot | all | **COMPLETE** | ✅ 240/240 from final implementations; cross-account consistency verified |
 | 6 — Audits | B, C | **COMPLETE** | ✅ 240/240, all six audits, every re-run landed; 9,238 rows |
-| 7 — Calibration & validity | D | not started | — |
+| 7 — Calibration & validity | D | **CODE DONE** | `05_calibrate.ipynb`: oracles + M0 through the audits, canary ground truth, calibration tables |
 | 8 — Analysis | D | not started | — |
 
 > **Two different stage numberings are in play.** The table above is the *plan's build*
@@ -28,7 +28,7 @@ genuinely unresolved — as opposed to merely unwritten.
 > Plan stage 4 is "write the unlearning methods"; queue stage 4 is shadows. Read the CLI's
 > `status` output for the queue meaning.
 
-**Test suite: 488 passing** (+9 `slow`, incl. the Stage 6 end-to-end) (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
+**Test suite: 521 passing** (+10 `slow`, incl. the Stage 6 end-to-end) (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
 
 ---
 
@@ -1426,6 +1426,79 @@ Two smaller consequences of oracles-as-candidates, both handled:
 **Candidates: 52.** 40 paired (5 × 8 conditions, leave-one-out) + 12 ensemble at the primary
 condition. Their outputs are already cached from Stage 6, so the pass is much cheaper than the
 240-model one; relearning is the only part that trains.
+
+## Stage 7 design — what "audit validity" actually requires (25 Sep 2026)
+
+Decided with the team: every rate is reported **per condition, with its n and an exact 95%
+interval** — seven conditions rest on five retrains, and suppressing them would erase the
+difficulty axis.
+
+### An oracle band cannot measure audit validity on its own
+
+A band built from genuine retrains flags ≈ 5% of held-out retrains **by construction**: it asks
+whether a retrain looks like the other retrains. That verifies the *calibration*, not the audit.
+Validity needs two measurements the band cannot give:
+
+- **Native false-positive rate** — each retrain-free audit's *own* decision rule, applied
+  verbatim to models that provably never saw the forget set. Population/RMIA: AUC significantly
+  above 0.5 (Hanley–McNeil null SE); TPR at the nominal FPR above that FPR (binomial); SDE: its
+  verdict. A retrain the rule calls "not forgotten" is a false positive *as the audit is used in
+  practice*. Behaviour, CKA and relearning have no native rule — they are defined against a
+  retrain — and their calibration is the band.
+- **Power** — needs models known **not** to have forgotten. That is M0. Stage 7 therefore
+  audits M0 under each of the eight conditions it serves (`--role base`), as the positive
+  control. `low_discriminability` = M0's mean inside one oracle sd: the audit cannot see
+  anything at that condition, and any verdict there is uninformative.
+
+### Bands: prediction intervals, not `mean ± 2·sd` — a deviation, measured
+
+`band_width_sd: 2.0` is honoured as nominal coverage (95.45%), applied through
+`t(n−1) · s · sqrt(1 + 1/n)`. Simulated in `tests/test_calibrate.py`: the prediction interval
+misses genuine retrains at 4.55% for every n from 4 to 16; a literal `mean ± 2·s` at n = 4 misses
+them at **over 2.5×** that. With a literal reading, the small-n conditions would report inflated
+false-positive rates that were the band's doing and would read as audit invalidity. Bands need at
+least three retrains; below that the rate is *absent*, never zero.
+
+**Leave-one-out** at every condition, uniformly: each retrain tested against a band from the
+others. The pre-registered 9/3 split exists only at the primary condition and is reported there
+as a check (`holdout_fpr`, n = 3). Direction comes from the metric registry: one-sided for
+`lower_better` / `higher_better`, two-sided for `closer_to_oracle`; `nominal_fpr` is reported
+per row so the rates are readable.
+
+### Canary ground truth — and a flaw in the registered canary metrics
+
+`canary_acc` and `canary_prob` (pre-registered) mis-score the destroyed control: a model that
+knows nothing predicts the assigned wrong label ≈ 1 time in 10 by chance, while the oracle —
+confident in the *true* label — almost never does, so the destroyed model reads as "still
+remembers". **Proposed: `canary_top_wrong`** — among the nine wrong labels only, is the assigned
+one the favourite? The true label is excluded, so a no-memory model sits at the oracle's natural
+confusion rate (≈ 1/9) and a remembering one far above it. Ground truth: oracles negative and M0
+positive by construction; an unlearned model positive iff `canary_top_wrong` exceeds the oracle
+band. Added to `metrics.yaml` as **PROPOSED, pending the four-person sign-off**; the registered
+two are still recorded and reported with the flaw stated.
+
+### Correctness defects caught by the Stage 7 end-to-end test before any GPU time
+
+- **Self-anchor duplicate.** An oracle or M0 audited as a candidate is also the relearning
+  anchor for its own seed; both rows carried `relearn_auc` under one run_id and the record key
+  rejected every one. All 92 Stage 7 targets would have failed on Kaggle. The anchor copy of the
+  candidate's own row is dropped; its *other* anchor is kept.
+- **Leave-one-out reference** (above, 25 Sep): a paired oracle compared against itself.
+- **M0 cache key.** One base run_id serves seven conditions, so M0 is never written to the
+  run_id-keyed disk cache, and its record shards carry the condition in the suffix.
+
+**Testing note.** Never run two pytest sessions at once on one machine: each new session prunes
+older `pytest-of-<user>/pytest-N` temp directories and can delete a running test's `tmp_path`
+underneath it. It produced one spurious slow-test failure here; in isolation and in order all ten
+pass. The CPU training test takes ~25 min alone — don't put a 20-minute cap on `-m slow`.
+
+### What it produces — `results/calibration/*.parquet`
+
+`bands` (per condition/metric: the retrain interval) · `validity` (native FPR, calibrated FPR,
+M0 power, low-discriminability, holdout check — each with k, n, CI) · `flags` (per unlearned
+model and metric: calibrated and native verdict — Stage 8's input) · `canary` (ground-truth
+statistics and label per canary model) · `canary_validity` (each audit's TPR/TNR/balanced
+accuracy against the ground truth).
 
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 

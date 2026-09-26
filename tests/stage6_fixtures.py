@@ -50,7 +50,8 @@ class _Ctx:
             "oracles": {"paired_seeds": [0]},
             "shadows": {"count": 2, "subset_fraction": 0.5},
         }
-        self.seeds = {"audit": 0}
+        self.seeds = {"audit": 0, "train": [0]}
+        self.primary_condition = forget_id
         cfg = yaml.safe_load((find_configs() / "audits.yaml").read_text(encoding="utf-8"))
         cfg["relearning"]["eval_steps"] = [0, 1, 2]
         cfg["relearning"]["reintroduction_size"] = 16
@@ -63,6 +64,9 @@ class _Ctx:
 
     def spec(self, forget_id):
         return self._spec
+
+    def all_forget_ids(self):
+        return (self._spec.forget_id,)
 
     def forget_indices(self, forget_id):
         return self._fidx
