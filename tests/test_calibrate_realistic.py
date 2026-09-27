@@ -288,7 +288,8 @@ class TestTheCommandAndTheNotebookCell:
         assert "validity" in out and "models by role" in out
         # The command prints the whole report itself, so a stale notebook cell cannot hide it.
         for section in ("NATIVE false-positive rate", "NATIVE POWER", "POWER --",
-                        "CALIBRATED false-positive rate", "EFFECT SIZE", "RELEARNING PROTOCOL",
+                        "CALIBRATED false-positive rate", "EFFECT SIZE",
+                        "in retrain standard deviations", "RELEARNING PROTOCOL",
                         "RELEARNING vs STARTING ACCURACY", "UTILITY", "CANARY GROUND TRUTH",
                         "CANARY VALIDITY"):
             assert section in out, section
@@ -443,3 +444,35 @@ class TestRelearningVsAccuracy:
         r = tables["relearning_vs_accuracy"]
         assert set(r["forget_id"]) == set(CONDITIONS)
         assert (r["n_unlearned"] == (len(METHODS) - 1) * len(SEEDS)).all()  # all but neggrad
+
+
+def test_missing_stage3_to_5_records_are_named_not_left_as_zero_rows(
+    records_dir, tmp_path, monkeypatch, capsys
+):
+    """The real run with only the Stage 6 dataset attached printed 'utility 0 rows' and a
+    one-row relearning check. Without the training/unlearning shards the command must say which
+    dataset is missing, and the report which conditions it could not compute."""
+    import shutil
+
+    from forgetcheck import cli
+    from forgetcheck.config import find_configs
+
+    rec = tmp_path / "results" / "records"
+    rec.mkdir(parents=True)
+    for p in records_dir.glob("*.parquet"):
+        if not p.name.endswith(("--train.parquet", "--unlearn.parquet")):
+            shutil.copy2(p, rec / p.name)
+
+    class Ctx:
+        pass
+
+    ctx = Ctx()
+    ctx.records_dir = rec
+    ctx.audits = yaml.safe_load((find_configs() / "audits.yaml").read_text(encoding="utf-8"))
+    ctx.primary_condition = PRIMARY
+    monkeypatch.setattr(cli, "_ctx", lambda args: ctx)
+    assert cli.cmd_calibrate(cli.build_parser().parse_args(["calibrate"])) == 0
+    out = capsys.readouterr().out
+    assert "records: 0 training shards (stages 3-4), 0 unlearning shards" in out
+    assert "attach the forgetcheck-artifacts dataset" in out
+    assert "not computed for mem-high-3000" in out  # canary alone survives, as on Kaggle

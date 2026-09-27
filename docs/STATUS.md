@@ -1842,13 +1842,132 @@ curve's step 0: same probe, same labels. At canary it is `canary_acc`, because S
 those retrains on clean labels. Damaged models are excluded. Where "relearning only" is 0,
 relearning adds nothing to accuracy there, and its claims rest on the conditions where it is not.
 
+## STAGE 7, fourth read — the counts (27 Sep 2026)
+
+### The run lacked the Stage 3–5 records; nothing is broken
+
+The output showed `utility 0 rows` and a relearning check at canary only. Stages 3–5 uploaded
+their records alongside the checkpoints, to **forgetcheck-artifacts**, and that dataset was not
+attached. The proof is in the output: the loaded models include no `shadow` role, and only Stage
+4's training records carry it. `calibrate` now prints a record inventory (expected: 94 training
+shards = 10 M0 + 52 retrains + 32 shadows, and 240 unlearning shards). It also names the missing
+dataset, and the report names the conditions it could not compute.
+
+### 1. The 0.75 is exactly "every model that remembers, plus every destroyed model"
+
+19 rows have identical counts: tp 30, fn 0, tn 5, fp_retrain 0, fp_other 5. They are:
+
+- `js_to_oracle` and `logit_l2`, all three probes;
+- `pred_agreement`, forget and test;
+- the three population MIA metrics and `mia_acc_rmia` (calibrated);
+- `relearn_auc`, layer4 activation L2, layer3–4 CKA (both kernels), and `sde_hsic`.
+
+Every one of them catches all 30 models that remember and passes all 5 retrains. The only errors
+are the 5 destroyed models. Once the guard marks those as damaged (test accuracy 0.10), all 19
+reach **1.00**. That follows arithmetically from the counts; the next run prints it.
+
+- **`js_to_original`** (forget): n 35, tn 10. It *classifies* the destroyed model correctly,
+  because that model is far from M0 too. It does not score well by abstaining.
+- **`relearn_t80`**: n 35. The destroyed models' verdicts are undefined, since they never recover
+  80% of M0's starting accuracy, so this audit **abstains** on damage rather than recognising
+  it. It also misses 4 of the 30 that remember.
+- **`sde_verdict`** (native): flags 3 of the 5 destroyed models and misses 3 that remember.
+- **CKA at layer1** catches **none** of the 30. It flags only the 5 destroyed models and 1
+  retrain: early layers register damage and nothing else.
+- **Native population MIA** also scores 0.75, but the other way round: all 5 retrains flagged,
+  the constant predictor passed. The guard cannot help there.
+
+### 2. Two retrain-free audits point the wrong way where memorization is strongest
+
+M0 minus the retrain mean, in points:
+
+| | canary | mem-high | mem-med | rand-* | mem-low |
+|---|---|---|---|---|---|
+| population AUC | **−9.6** | **−11.1** | −2.7 | +5.2 to +6.0 | +0.9 |
+| population TPR@1% | **−79.2** | **−9.1** | +0.1 | −0.2 to +0.2 | −0.3 |
+| RMIA AUC | +40.4 | +49.0 | +13.0 | +8.6 to +9.0 | +0.2 |
+| RMIA TPR@1% | +27.1 | +34.9 | +5.4 | +4.1 to +5.0 | 0.0 |
+
+**Population attack.** Its attacker is trained to tell forget examples from test examples by the
+model's loss. A retrain has high loss on atypical or mislabelled examples it never saw, which
+makes them easy to separate. Training on them, as M0 did, lowers that loss towards test level.
+So at canary and mem-high **the model that trained on the forget set looks less like a member
+than models that never saw it.** Its calibrated band is two-sided, so it still detects M0 as
+different, but on the wrong side: read the usual way (higher = leakier), it says the opposite of
+the truth.
+
+**SDE's verdict** at mem-high calls 10 of 17 retrains "in training" and 0 of 5 M0s. That is
+inverted.
+
+**RMIA** points the right way at every condition, and its M0 effect grows with memorization:
+mem-high 49 > canary 40 > mem-med 13 > random ~9 > mem-low 0.2. This is not the ordering
+tautology of open question 2. The strata are ranked by memorization, but the RMIA effect is a
+separate measurement.
+
+### 3. The native rules, condition by condition (native FPR on retrains, native power on M0)
+
+Valid means ≤ 1/5 retrains flagged and ≥ 4/5 M0 caught. n = 5 per cell except the mem-high FPR
+(17), so each cell is coarse. mem-low "blindness" is the correct answer, since M0 barely differs
+there, and is not counted against a rule.
+
+| rule | valid at | invalid (flags retrains) | blind (misses M0) | inverted |
+|---|---|---|---|---|
+| population AUC | 4 random | canary, mem-high, mem-low, mem-med | — | — |
+| population TPR@1% | **none** | canary, mem-high, mem-low, mem-med (3/5) | all 4 random | — |
+| RMIA AUC | mem-high, 4 random | mem-med | **canary** (0/5) | — |
+| RMIA TPR@1% | canary, mem-med, 4 random | mem-high | — | — |
+| SDE verdict | canary, rand-3000, rand-5000 | rand-500 (2/5) | mem-med (0/5); rand-2500 weak (3/5) | **mem-high** (10/17 vs 0/5) |
+
+The plan's headline privacy number, TPR at low FPR, is **valid at no condition** for the
+population attack. Used as practitioners use it, it is either invalid or blind everywhere.
+
+RMIA's AUC rule is blind at canary. The retrains' RMIA AUC there sits near 0.1: M0 is 40 points
+above them and still not significantly above 0.5. The likely mechanism, not yet checked, is that
+a full-data target gives the canaries' wrong labels less probability than the weaker half-data
+references do, so the likelihood ratio runs below 1 for members and above 1 for test points.
+
+At canary, RMIA's TPR@1% (native and calibrated alike) catches M0 but **none of the 25 unlearned
+models that remember**. Their residual association (`canary_acc` 0.11–0.19) is invisible at a 1%
+operating point.
+
+### 4. What the 2-point effect rule does
+
+It marks 20 cells:
+
+- all 8 proportion metrics at mem-low, every one under 2 points (mem-low is a clean negative
+  control);
+- `pred_agreement` at mem-med and at all four random sets (0.3–1.7);
+- population TPR@1% at mem-med and the random sets (≤ 0.3; it had no power there anyway);
+- `mia_acc_pop` at mem-med (0.3);
+- `relearn_auc` at rand-500 (1.8).
+
+The **power claims it removes**: `relearn_auc` at mem-low and rand-500, `mia_acc_pop` at mem-low,
+and `pred_agreement` at the four random sets.
+
+No cell lies between 1.8 and 2.7 points, so any floor in that range gives the same result. A
+1-point floor would instead score six more cells: `pred_agreement` at the random sets,
+`relearn_auc` at rand-500, and `mia_acc_pop` at mem-low. Those are the only cells sensitive to the
+choice.
+
+At a 1% operating point, 2 raw points is a tripling, but every TPR effect here is either ≥ 4.1
+or ≤ 0.3 points, so nothing turns on it.
+
+The non-proportion metrics now get their own table, in retrain standard deviations.
+
+### 5. Relearning vs starting accuracy — canary only so far
+
+Every unlearned model already stands out on its starting accuracy: `canary_acc` 0.148 against
+the retrains' 0.014. Relearning flags the same 30 models and **no others**, with r = 0.61. No
+non-destructive method hides the canary association; all show it in plain accuracy (method means
+0.108–0.186, 8–13× the retrains'). So the hidden-knowledge case relearning exists to catch does
+not occur at canary. The other seven conditions need the artifacts dataset.
+
 ### Open before Stage 8
 
-1. **One CPU run**: the three setup cells, then Step 4 (`calibrate`) alone. That prints
-   everything: the `fp_other` split, `ba_guarded`, native power, the effect-size table, the
-   utility table and the relearning check.
-2. Confirm the utility guard against that table, and read the relearning check.
-3. `runtime_s` is confounded with which account ran each seed: compare within an account.
+1. **One CPU run with forgetcheck-artifacts attached**: the setup cells, then Step 4. That run
+   gives the guarded balanced accuracy, the utility table that confirms the 5-point guard, and
+   the relearning check at all eight conditions.
+2. `runtime_s` is confounded with which account ran each seed: compare within an account.
 
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 

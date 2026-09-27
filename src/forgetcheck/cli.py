@@ -451,6 +451,18 @@ def cmd_calibrate(args) -> int:
 
     ctx = _ctx(args)
     df = load_audit_records(ctx.records_dir)
+
+    # Stages 3-5 uploaded their records together with the checkpoints, to forgetcheck-artifacts.
+    # The utility guard and the relearning check are built from them, so their absence is said
+    # loudly: the first run with only the Stage 6 dataset attached printed "utility 0 rows".
+    n_train = len(list(ctx.records_dir.glob("*--train.parquet")))
+    n_unlearn = len(list(ctx.records_dir.glob("*--unlearn.parquet")))
+    print(f"records: {n_train} training shards (stages 3-4), {n_unlearn} unlearning shards "
+          f"(stage 5)")
+    if not n_train or not n_unlearn:
+        print("!! the utility guard and the relearning check need both: attach the "
+              "forgetcheck-artifacts dataset (stages 3-5) and re-run the setup cells\n")
+
     tables = calibrate(df, registry=default_registry(), config=CalibrationConfig.from_context(ctx))
     out = ctx.records_dir.parent / "calibration"
     for path in write_tables(tables, out):

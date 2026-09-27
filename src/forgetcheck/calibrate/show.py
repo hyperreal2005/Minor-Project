@@ -76,6 +76,13 @@ def print_report(out_dir="results/calibration") -> None:
             print("marked:", ", ".join(f"{r.metric} @ {r.forget_id}"
                                        for r in marked.itertuples()), "\n")
 
+    if "m0_gap_sd" in fwd:
+        _section("EFFECT SIZE, every metric -- M0's gap from the retrain mean, in retrain standard "
+                 "deviations",
+                 "(the registered safeguard marks a cell under 1 sd; divergences, distances, CKA "
+                 "and HSIC have only this scale)")
+        print(pivot(fwd, "m0_gap_sd", digits=1), "\n")
+
     p = _read(out, "relearning_protocol")
     if len(p):
         _section("RELEARNING PROTOCOL -- random-init must relearn less than a retrain; M0 at least "
@@ -83,12 +90,16 @@ def print_report(out_dir="results/calibration") -> None:
         print(p.round(3).to_string(index=False), "\n")
 
     rv = _read(out, "relearning_vs_accuracy")
+    _section("RELEARNING vs STARTING ACCURACY -- does relearning flag any unlearned model that "
+             "its forget accuracy alone does not?",
+             "(flagged_by_relearn_only = 0: relearning adds nothing to plain accuracy at that "
+             "condition; damaged models excluded)")
     if len(rv):
-        _section("RELEARNING vs STARTING ACCURACY -- does relearning flag any unlearned model that "
-                 "its forget accuracy alone does not?",
-                 "(flagged_by_relearn_only = 0: relearning adds nothing to plain accuracy at that "
-                 "condition; damaged models excluded)")
         print(rv.round(3).to_string(index=False), "\n")
+    missing = sorted(set(v["forget_id"]) - set(rv["forget_id"] if len(rv) else ()))
+    if missing:
+        print(f"not computed for {', '.join(missing)}: their starting accuracies are Stage 3/5 "
+              f"records (the forgetcheck-artifacts dataset)\n")
 
     u = _read(out, "utility")
     if len(u):
@@ -102,7 +113,8 @@ def print_report(out_dir="results/calibration") -> None:
         print(u.assign(label=label).pivot_table(index="label", columns="forget_id",
                                                 values="drop_pp", aggfunc="max").round(1), "\n")
     else:
-        print("UTILITY -- no test_acc records found; attach the Stage 3-5 artifacts dataset\n")
+        print("UTILITY -- no test_acc records found: attach the forgetcheck-artifacts dataset "
+              "(stages 3-5)\n")
 
     c = _read(out, "canary")
     if len(c):
