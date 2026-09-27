@@ -19,7 +19,7 @@ genuinely unresolved — as opposed to merely unwritten.
 | 4 — Unlearning methods | A, B | **DONE** | Six methods + SSD behind one interface |
 | 5 — Full-pipeline pilot | all | **COMPLETE** | ✅ 240/240 from final implementations; cross-account consistency verified |
 | 6 — Audits | B, C | **COMPLETE** | ✅ 240/240, all six audits, every re-run landed; 9,238 rows |
-| 7 — Calibration & validity | D | **CODE DONE** | `05_calibrate.ipynb`: oracles + M0 through the audits, canary ground truth, calibration tables |
+| 7 — Calibration & validity | D | **RUN — RESULTS IN** | 52 oracles + 40 M0 audited, calibrated; shared-initialisation check pending (CPU) |
 | 8 — Analysis | D | not started | — |
 
 > **Two different stage numberings are in play.** The table above is the *plan's build*
@@ -28,7 +28,7 @@ genuinely unresolved — as opposed to merely unwritten.
 > Plan stage 4 is "write the unlearning methods"; queue stage 4 is shadows. Read the CLI's
 > `status` output for the queue meaning.
 
-**Test suite: 533 passing** (+11 `slow`, incl. the Stage 6 end-to-end) (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
+**Test suite: 541 passing** (+11 `slow`, incl. the Stage 6 end-to-end) (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
 
 ---
 
@@ -1548,6 +1548,95 @@ used hand-built DataFrames, whose dtypes and group shapes the real loader does n
 
 Nothing is lost: calibration only reads records. After the fix is pushed, the same session
 re-runs the install cell (which follows `origin/main` since d8ad8cb) and then `calibrate`.
+
+## STAGE 7 RESULTS (27 Sep 2026)
+
+52 oracles, 40 M0 runs and 240 unlearned models calibrated; 311 (condition, audit, metric,
+probe) cells. Rates below are on the forget probe (layer4 for representation), each with its
+exact 95% interval; n = 17 at mem-high (12 independent + 5 paired retrains), 5 elsewhere.
+
+### 1. The population attack's own rule calls every genuine retrain "leaking" on every non-random forget set
+
+Native false-positive rate of `mia_auc_pop` (AUC significantly above 0.5):
+
+| canary-500 | mem-high | mem-low | mem-med | rand-500 | rand-2500 | rand-3000 | rand-5000 |
+|---|---|---|---|---|---|---|---|
+| 5/5 | **17/17** [0.81, 1] | 5/5 | 5/5 | 1/5 | 0/5 | 0/5 | 0/5 |
+
+Same at 1% FPR (`mia_tpr_at_fpr_pop`): 1.0 at canary, mem-high, mem-low; 0.6 at mem-med. A
+*trained* attacker separates any two different distributions, and a forget set chosen by
+memorisation or mislabelling is a different distribution from the test set — atypical examples
+have high loss, easy ones low, canaries wrong labels — whether or not the model ever saw them.
+The attack detects the distribution shift, not membership. Note the rule used is *more*
+conservative than common practice (a significance test, not "AUC > 0.5").
+
+On random forget sets the rule is valid — but at the low-FPR operating point the plan names as
+the headline it has **no power**: `mia_tpr_at_fpr_pop` detects M0 at 0 of 5 at all four random
+conditions (low-discriminability). Only its AUC separates M0 there.
+
+### 2. RMIA is better — and still not immune; it fails at *different* strata
+
+Native FPR is 0 almost everywhere, and at 1% FPR it detects M0 at every condition but mem-low.
+But:
+
+- `mia_auc_rmia`: **5/5 retrains flagged at mem-med**, 0 elsewhere.
+- `mia_tpr_at_fpr_rmia`: **17/17 flagged at mem-high** [0.81, 1], 0 elsewhere.
+
+Hypothesis, to verify in Stage 8: the reference shadows are trained on *half* the data, so they are
+weaker than the full-data target, and the ratio p_target / p_ref inflates most for examples whose
+correctness depends on dataset size — the bulk of medium-memorisation examples (→ AUC at
+mem-med), and a tail of atypical ones that a 47k-image model sometimes gets and a 25k one does
+not (→ TPR at 1% FPR at mem-high). The offline correction (`a = 0.3`) is difficulty-blind. The
+population attack and RMIA break at different points on the difficulty axis — the
+within-family disagreement and the difficulty interaction, both measured.
+
+### 3. SDE's retrain-free verdict is unreliable off its own assumption; its statistic is not
+
+`sde_verdict` native FPR: **10/17 at mem-high** [0.33, 0.82] — a coin flip; 2/5 at rand-500,
+1/5 at rand-2500, 0 elsewhere. SDE's abstract motivates it on *random* subsets; realistic
+deletion requests are not random. Yet `sde_hsic`, the raw statistic calibrated against
+retrains, detects M0 at every condition. The signal is there; the retrain-free decision rule is
+what fails — and a calibrated SDE is no longer retrain-free.
+
+### 4. The calibration works
+
+Calibrated FPR on held-out retrains: **16 / 595 = 2.7%** [1.5, 4.3] across the seven n = 5
+conditions and **11 / 284 = 3.9%** [1.9, 6.8] at mem-high, against a nominal 2.3–4.6% depending
+on each metric's direction. The prediction-interval band holds its rate on real retrains, and
+replacing each audit's native rule with it removes the false positives while keeping power on M0
+for most metrics at most conditions. That is the constructive result.
+
+### 5. Power, and where nothing can be seen
+
+- **mem-low** behaves as the negative control: JS, logit distance, agreement, CKA, both MIAs
+  cannot separate M0 from retrains. Some metrics still do — `activation_l2` (1.0), `relearn_auc`
+  (1.0), `sde_hsic` (1.0), `mia_acc_pop` (0.8). Either genuine but tiny residual influence (M0 is
+  more confident on examples it trained on) or non-specific model differences. `activation_l2`
+  is the prime suspect for the latter: it is scale-sensitive and computed on the mixed probe, and
+  it detects M0 at 1.0 everywhere. Needs `m0_gap_sd` (effect size) and the twin check first.
+- **`relearn_t80`** has power only at canary; at mem-high it is censored (retrains never reach 80%
+  within 100 steps, so no band). A censoring-aware version would be informative there.
+- **`relearn_norm`** is calibratable only at mem-high (the only independent retrains): power 1.0,
+  calibrated FPR 1/12.
+
+### Removed as artefacts, not results
+
+- `js_to_original` "power 1.0 everywhere": M0's divergence from *itself* is 0 by definition.
+  Power is no longer reported for metrics defined against M0.
+- `relearn_randinit_auc` rows: one protocol constant per condition, not a candidate metric. It
+  now feeds the relearning protocol check (floor < retrain < M0) that had never been computed.
+
+### Open before Stage 8
+
+1. **Shared initialisation.** `make_resnet18(seed=...)` gives M0 *s* and paired oracle *s*
+   identical initial weights, by design. Every unlearned model's reference ensemble therefore
+   contains its initialisation twin, while the band (oracle vs oracle) never does. If a shared
+   init keeps networks measurably closer, the oracle-referenced audits read unlearned models as
+   more retrain-like than they are. `forgetcheck diagnose-twins` measures it from the cache and
+   scores the shift against the band half-width; if it is a material fraction, the fix is to
+   exclude the twin exactly as leave-one-out excludes an oracle from its own band.
+2. The relearning protocol table and canary validity — now printed by the results cell.
+3. **`canary_top_wrong` still needs the four-person sign-off** (PROPOSED in `metrics.yaml`).
 
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 

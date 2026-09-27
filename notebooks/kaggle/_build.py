@@ -822,7 +822,22 @@ print(fwd.pivot_table(index="metric", columns="forget_id", values="m0_tpr").roun
 
 print("CALIBRATED false-positive rate on held-out retrains -- should sit near nominal (0.02-0.05)")
 print("(this checks the calibration itself, not the audits)\\n")
-print(fwd.pivot_table(index="metric", columns="forget_id", values="calibrated_fpr").round(2))
+print(fwd.pivot_table(index="metric", columns="forget_id", values="calibrated_fpr").round(2), "\\n")
+
+print("RELEARNING PROTOCOL -- random-init must relearn less than a retrain; M0 at least as much")
+print("(m0_minus_oracle_sd near 0 = M0 and retrains inseparable: reversibility not measurable here)\\n")
+print(pd.read_parquet("results/calibration/relearning_protocol.parquet").round(3).to_string(index=False), "\\n")
+
+print("CANARY GROUND TRUTH -- oracles should sit near 1/9 on canary_top_wrong, M0 near 1\\n")
+c = pd.read_parquet("results/calibration/canary.parquet")
+c["ground_truth"] = c["ground_truth"].map({True: 1.0, False: 0.0})  # None -> NaN, not a crash
+print(c.groupby(["role", "method"])[["canary_top_wrong", "canary_acc", "canary_prob", "ground_truth"]]
+       .mean(numeric_only=False).round(3), "\\n")
+
+print("CANARY VALIDITY -- each audit's verdicts against that ground truth (balanced accuracy)\\n")
+cv = pd.read_parquet("results/calibration/canary_validity.parquet")
+print(cv.pivot_table(index=["audit", "metric", "probe_set"], columns="kind",
+                     values="balanced_accuracy").round(2))
 """
 
 LOOK_CALIBRATION = """\
@@ -890,6 +905,10 @@ def nb_calibrate() -> dict:
         code("!{CLI} --root . --device {DEVICE} audit --role base\n"),
         md("## Step 4 - calibrate\n\nCPU only, reads the records written above."),
         code("!{CLI} --root . calibrate\n"),
+        md("## Step 5 - the shared-initialisation check\n\nCPU only, from the cached "
+           "outputs. Each paired oracle starts from the same weights as the M0 of its seed; "
+           "this measures whether that makes unlearned models look more retrain-like."),
+        code("!{CLI} --root . diagnose-twins\n"),
         md("## The results"),
         code(INSPECT_CALIBRATION),
         md(LOOK_CALIBRATION),

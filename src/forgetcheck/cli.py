@@ -470,6 +470,56 @@ def cmd_calibrate(args) -> int:
     return 0
 
 
+def cmd_diagnose_twins(args) -> int:
+    """Does a shared initialisation make models look retrain-like? Cached outputs only, no GPU.
+
+    Each unlearned model's M0 shares its initial weights with one paired oracle. This measures
+    how much closer that twin is than the other oracles, and how far it moves the five-oracle
+    mean the audits use -- relative to the calibration band's half-width, which is what decides
+    whether a verdict could flip.
+    """
+    import pandas as pd
+
+    from .calibrate.twins import twin_effect
+
+    ctx = _ctx(args)
+    rows = []
+    for cond in sorted(ctx.all_forget_ids()):
+        got = twin_effect(ctx.store, forget_id=cond, train_seeds=ctx.seeds["train"],
+                          methods=CORE_METHODS)
+        print(f"  {cond}: {'measured' if got else 'skipped (fewer than 3 cached oracles)'}")
+        rows += got
+    if not rows:
+        print("no cached outputs to measure; run the audits first")
+        return 1
+    df = pd.DataFrame(rows)
+
+    bands_path = ctx.records_dir.parent / "calibration" / "bands.parquet"
+    if bands_path.is_file():
+        bands = pd.read_parquet(bands_path)
+        key = {"js_forget": ("js_to_oracle", "forget"), "cka_layer4": ("cka_linear", "layer4")}
+        half = {}
+        for _, b in bands.iterrows():
+            half[(b["forget_id"], b["metric"], b["probe_set"])] = (b["hi"] - b["lo"]) / 2
+        df["band_half_width"] = [
+            half.get((r.forget_id, *key[r.metric]), float("nan")) if r.metric in key else float("nan")
+            for r in df.itertuples()
+        ]
+        df["shift_vs_band"] = df["ensemble_shift"] / df["band_half_width"]
+
+    out = ctx.records_dir.parent / "calibration" / "twins.parquet"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(out, index=False)
+    pd.set_option("display.width", 200)
+    cols = [c for c in ("forget_id", "metric", "twin_mean", "other_mean", "oracle_oracle_mean",
+                        "twin_advantage_sd", "ensemble_shift", "shift_vs_band") if c in df]
+    print("\ntwin_advantage_sd > 0: the same-initialisation oracle is closer than the others")
+    print("shift_vs_band: how far that moves the audited ensemble mean, as a fraction of the band")
+    print(df[cols].round(4).to_string(index=False))
+    print(f"\n-> {out}")
+    return 0
+
+
 def cmd_status(args) -> int:
     """What is in the store, and what each stage still needs."""
     ctx = _ctx(args)
@@ -598,6 +648,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     cal = sub.add_parser("calibrate", help="stage 7: bands and audit validity from the records")
     cal.set_defaults(func=cmd_calibrate)
+
+    tw = sub.add_parser("diagnose-twins",
+                        help="does a shared initialisation make models look retrain-like? (CPU)")
+    tw.set_defaults(func=cmd_diagnose_twins)
 
     fs = sub.add_parser("forget-sets", help="materialise and describe every forget condition")
     fs.set_defaults(func=cmd_forget_sets)

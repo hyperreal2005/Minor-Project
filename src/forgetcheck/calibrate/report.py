@@ -50,6 +50,15 @@ SELF_ANCHORED = frozenset({"relearn_norm"})
 
 GROUND_TRUTH = ("canary_acc", "canary_prob", "canary_top_wrong")
 
+#: One value per condition describing the *protocol*, not any candidate: no band applies. The
+#: random-init relearning floor feeds the relearning protocol check instead.
+PROTOCOL_CONSTANTS = frozenset({"relearn_randinit_auc"})
+
+#: Metrics defined relative to M0 itself. M0's value is fixed by construction (its divergence
+#: from itself is 0), so "power on M0" would be a tautology and is not reported. The first real
+#: calibration showed js_to_original detecting M0 at 100% everywhere, for exactly that reason.
+M0_SELF_REFERENCED = frozenset({"js_to_original"})
+
 
 @dataclass(frozen=True)
 class CalibrationConfig:
@@ -144,7 +153,8 @@ def calibrate(df, *, registry, config: CalibrationConfig) -> dict:
     """Build every Stage 7 table from a records DataFrame. Pure: no IO, no GPU."""
     import pandas as pd
 
-    meas = df[~df["metric"].isin(NOT_MEASUREMENTS) & ~df["metric"].isin(GROUND_TRUTH)]
+    meas = df[~df["metric"].isin(NOT_MEASUREMENTS | PROTOCOL_CONSTANTS)
+              & ~df["metric"].isin(GROUND_TRUTH)]
     meas = meas[meas["audit"] != "meta"]
 
     bands, validity, flags = [], [], []
@@ -187,9 +197,10 @@ def calibrate(df, *, registry, config: CalibrationConfig) -> dict:
             row.update(_with_ci("calibrated_fpr", *_rate(
                 loo_flags(oracles["value"].to_numpy(), direction=direction,
                           coverage=config.coverage))))
-            row.update(_with_ci("m0_tpr", *_rate(
-                [flag(float(v), band, direction) for v in m0["value"]])))
-            if len(m0) and band.sd == band.sd:
+            if metric not in M0_SELF_REFERENCED:
+                row.update(_with_ci("m0_tpr", *_rate(
+                    [flag(float(v), band, direction) for v in m0["value"]])))
+            if len(m0) and band.sd == band.sd and metric not in M0_SELF_REFERENCED:
                 gap = abs(float(m0["value"].mean()) - band.mean)
                 row["m0_gap_sd"] = gap / band.sd if band.sd > 0 else float("inf")
                 row["low_discriminability"] = bool(gap < config.low_discriminability_sd * band.sd)
@@ -224,7 +235,43 @@ def calibrate(df, *, registry, config: CalibrationConfig) -> dict:
         "flags": pd.DataFrame(flags),
         "canary": canary,
         "canary_validity": canary_validity,
+        "relearning_protocol": _relearning_protocol(df),
     }
+
+
+def _relearning_protocol(df):
+    """The relearning layer's own self-test, per condition: random-init < retrain < M0.
+
+    The gate the plan wrote for Stage 6 ("original ~1, oracle ~0") holds by definition for the
+    normalised metric, so it checks nothing. The version with content compares raw curve AUCs:
+    a freshly initialised network relearning the same 500 examples must recover *less* than a
+    retrain (else the reintroduction data alone manufactures recovery), and M0 at least as much
+    as a retrain. `m0_minus_oracle_sd` says whether M0 and the retrains are separable at all
+    here -- where they are not, reversibility is not measurable at this condition.
+    """
+    import pandas as pd
+
+    g = df[df["audit"] == "relearning"]
+    rows = []
+    for cond, c in g.groupby("forget_id", sort=True):
+        floor = c.loc[c["metric"] == "relearn_randinit_auc", "value"]
+        oracle = c.loc[(c["metric"] == "relearn_auc") & (c["role"] == "oracle"), "value"]
+        m0 = c.loc[(c["metric"] == "relearn_auc") & (c["role"] == "base"), "value"]
+        if oracle.empty:
+            continue
+        o_mean = float(oracle.mean())
+        o_sd = float(oracle.std(ddof=1)) if len(oracle) > 1 else float("nan")
+        f = float(floor.mean()) if len(floor) else float("nan")
+        m = float(m0.mean()) if len(m0) else float("nan")
+        rows.append({
+            "forget_id": cond,
+            "randinit_auc": f,
+            "oracle_auc_mean": o_mean, "oracle_auc_sd": o_sd, "oracle_n": int(len(oracle)),
+            "m0_auc_mean": m, "m0_n": int(len(m0)),
+            "floor_below_oracle": bool(f < o_mean) if f == f else None,
+            "m0_minus_oracle_sd": (m - o_mean) / o_sd if (m == m and o_sd and o_sd > 0) else float("nan"),
+        })
+    return pd.DataFrame(rows)
 
 
 def _canary(df, meas, registry, config):

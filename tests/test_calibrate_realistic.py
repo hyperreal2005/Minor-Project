@@ -69,6 +69,8 @@ def _value(metric, role, rng):
         return {"oracle": 0.0, "unlearn": 0.6, "base": 1.0}[role] + float(rng.normal(scale=0.05))
     if metric == "relearn_t80":
         return float(abs(rng.normal(20, 5)))
+    if metric == "relearn_auc":  # accuracy-like, above the simulated 0.2 random-init floor
+        return {"oracle": 0.70, "unlearn": 0.80, "base": 0.95}[role] + float(rng.normal(scale=0.02))
     return float(abs(0.1 + shift + rng.normal(scale=0.02)))
 
 
@@ -242,3 +244,24 @@ class TestTheCommandAndTheNotebookCell:
         exec(compile(cell, "05_calibrate results cell", "exec"), {})
         shown = capsys.readouterr().out
         assert "NATIVE false-positive rate" in shown and "POWER" in shown
+
+
+class TestProtocolAndSelfReference:
+    def test_the_random_init_floor_is_not_banded(self, tables):
+        assert "relearn_randinit_auc" not in set(tables["validity"]["metric"])
+        assert "relearn_randinit_auc" not in set(tables["bands"]["metric"])
+
+    def test_the_relearning_protocol_check_is_computed_per_condition(self, tables):
+        p = tables["relearning_protocol"].set_index("forget_id")
+        assert set(p.index) == set(CONDITIONS)
+        assert (p["oracle_n"] >= 5).all() and (p["m0_n"] == 5).all()
+        assert p.loc[PRIMARY, "oracle_n"] == 17
+        assert p["floor_below_oracle"].all()  # the simulated floor, 0.2, sits below every oracle
+
+    def test_power_is_not_reported_for_a_metric_defined_against_m0_itself(self, tables):
+        v = tables["validity"]
+        js_orig = v[v["metric"] == "js_to_original"]
+        assert len(js_orig) > 0
+        assert "m0_tpr" not in js_orig or js_orig["m0_tpr"].isna().all()
+        # ...while its calibration on retrains is still reported.
+        assert js_orig["calibrated_fpr_n"].notna().all()
