@@ -128,8 +128,10 @@ calibration:
   # retained influence: "unlike a retrain" is as true of a broken model as of one that remembers,
   # and at the canary condition every calibrated audit flagged the destroyed control. The same 5
   # points relearning.max_utility_drop_pp registered for the same purpose -- one guard, one
-  # number. Adopted 27 Sep 2026 on the team's delegation, provisional until the utility table
-  # shows no non-destructive method near it.
+  # number. Adopted 27 Sep 2026 on the team's delegation and confirmed on the real utility
+  # table: healthy methods lose at most 3.8 points (l1sparse), neggrad 83.5-85.6, and the only
+  # models between are three at mem-low (neggradplus 7.4, scrub 7.8 at worst) -- so any value
+  # from 3.8 to 7.4 classifies every model identically.
   utility_guard_pp: 5.0
 
 agreement:

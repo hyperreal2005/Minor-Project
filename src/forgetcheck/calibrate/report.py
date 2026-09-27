@@ -431,6 +431,11 @@ def _relearning_vs_accuracy(df, damaged, config):
         x, y = np.concatenate([o_start, u_start]), np.concatenate([o_auc, u_auc])
         corr = (float(np.corrcoef(x, y)[0, 1]) if len(x) > 2 and x.std() > 0 and y.std() > 0
                 else float("nan"))
+        # Which side of the retrains a relearning-only flag falls on is the whole question:
+        # faster than a retrain is hidden knowledge; slower is damage or over-forgetting, which
+        # relearning sees and accuracy does not -- but it is not what the audit claims to find.
+        only = [a and not b for a, b in zip(by_auc, by_start)]
+        faster = sum(o and float(v) > b_auc.mean for o, v in zip(only, u_auc))
         rows.append({
             "forget_id": cond, "start_metric": metric,
             "n_retrain": len(o), "n_unlearned": len(u),
@@ -440,7 +445,9 @@ def _relearning_vs_accuracy(df, damaged, config):
             "r_relearn_vs_start": corr,
             "flagged_by_start": sum(by_start),
             "flagged_by_relearn": sum(by_auc),
-            "flagged_by_relearn_only": sum(a and not b for a, b in zip(by_auc, by_start)),
+            "flagged_by_relearn_only": sum(only),
+            "relearn_only_faster": faster,
+            "relearn_only_slower": sum(only) - faster,
         })
     return pd.DataFrame(rows)
 

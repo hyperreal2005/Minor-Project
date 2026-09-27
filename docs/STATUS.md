@@ -2004,13 +2004,118 @@ there, so the metric is constant: 0 ÷ 0, not infinitely separable. It was also 
 low-discriminability. Both are fixed and tested; a zero-width band with M0 on it is now NaN and
 marked.
 
+## STAGE 7, fifth read — the guard, the relearning check, and an artefact (27 Sep 2026)
+
+### Records: recovered, and they never reached the datasets
+
+All 302 audited models now have training-time accuracy: 286 from checkpoint metadata and 16 from
+records. No stray shard was found anywhere under the merged `results/` or `artifacts/`. So the
+Stage 3–5 record shards, bar those 16, are not in the attached datasets at all; only the
+checkpoint metadata survived the merge.
+
+That metadata carries everything Stage 7 needs. `runtime_s` exists only in records, so the one
+remaining source for it is the per-account Stage 3–5 datasets, if they are still on the three
+accounts.
+
+### 1. The utility guard is confirmed at 5 points
+
+Worst drop over seeds, in points below the retrain mean:
+
+- healthy methods: at most 3.8 (l1sparse; it pays 2.3–3.8 everywhere);
+- retrains' own spread: at most 0.5;
+- `neggrad`: 83.5–85.6.
+
+The only models in between are three at mem-low: seeds of NegGrad+ (worst 7.4) and SCRUB (worst
+7.8), hurt by gradient ascent on *easy* examples. Losing 7–8 points of test accuracy is real
+damage, and at mem-low M0 barely differs from a retrain, so a flag there cannot be retention
+anyway. Any threshold from 3.8 to 7.4 classifies every model identically. No longer provisional.
+
+### 2. The canary with the guard: every prediction held
+
+- **19 audits go from 0.75 to 1.00**: the 19 listed in the fourth read, §1.
+- **The rest land where the counts said they would:**
+  - `pred_agreement` retain: 0.77
+  - `mia_auc_rmia` (calibrated): 0.95
+  - activation L2: layer1–2 0.87, layer3 0.95
+  - CKA: layer1 0.45; layer2 0.58 (linear) and 0.72 (RBF)
+  - `sde_margin`: 0.78
+  - `sde_verdict`: 0.95
+- **Unchanged, as they must be:**
+  - native population MIA: 0.75 (its errors are retrains);
+  - RMIA native 0.50 / 0.58, and calibrated TPR 0.53;
+  - `js_to_original`: 1.00 / 0.70 / 0.85;
+  - `relearn_t80`: 0.93 (its destroyed models are undefined, not flagged).
+
+**The caveat this run exposed.** The canary cannot tell *detects retention* from *detects descent
+from M0*. No non-destructive method forgot the canaries, so every M0-descended model that isn't
+destroyed is a true positive. An audit that flags all of them scores 1.00 whatever it measures.
+§3 is such an audit. The twin diagnostic is the complement that catches it, and it clears JS
+(≤ 5% of the band) and CKA (≤ 13%).
+
+### 3. `activation_l2` measures the shared initialisation, not forgetting
+
+- **Signed effect:** M0 is *closer* to the retrains than they are to each other, at every
+  condition (−16 to −42 sd). CKA, which ignores how neurons are ordered, has M0 *less* similar
+  (−0.7 to −292). The two representation metrics disagree in sign about M0, and the raw one is
+  the outlier.
+- **Twin diagnostic:** the same-init oracle is 2.0–2.4 L2 units closer than the others, against
+  an oracle-to-oracle L2 of ~9. That is 26–39 retrain sd, and it moves the audited score by
+  **3.5–6.4 band half-widths**: on its own enough to flag every M0-descended model at every
+  condition.
+- **Why:** raw L2 compares neuron i with neuron i. That only means something when the neurons
+  correspond, which a shared initialisation arranges, and which is why CKA exists.
+
+Its power of 1.0 everywhere and its canary 1.00 are both artefacts. (The diagnostic's
+`twin_mean`/`other_mean` levels include the destroyed models, hence 1061 and 2539; the twin
+advantage is a within-model difference and unaffected.)
+
+**Recommendation (team decision): retire `activation_l2` from verdicts.** Keep its rows as a
+documented failure, and keep CKA as the representation audit. Recomputing without the twin is
+possible but would not rescue it: raw L2 between independently initialised networks still depends
+on neuron order.
+
+### 4. Relearning adds nothing to starting accuracy at 6 of 8 conditions
+
+| | start (retrain → unlearned) | relearn (retrain → unlearned) | r | flagged: start / relearn / relearn only |
+|---|---|---|---|---|
+| canary | 0.014 → 0.158 | 0.399 → 0.595 | 0.935 | 25 / 25 / 0 |
+| mem-high | 0.559 → 0.866 | 0.575 → 0.830 | 0.987 | 25 / 25 / 0 |
+| mem-med | 0.909 → 0.954 | 0.891 → 0.948 | 0.992 | 25 / 25 / 0 |
+| rand-2500 | 0.931 → 0.976 | 0.926 → 0.976 | 0.993 | 25 / 25 / 0 |
+| rand-3000 | 0.934 → 0.978 | 0.933 → 0.979 | 0.995 | 25 / 25 / 0 |
+| rand-5000 | 0.932 → 0.980 | 0.928 → 0.980 | 0.995 | 25 / 25 / 0 |
+| mem-low | 0.998 → 0.992 | 0.998 → 0.985 | 0.876 | 5 / 13 / **8** |
+| rand-500 | 0.934 → 0.941 | 0.982 → 0.972 | 0.961 | 20 / 24 / **4** |
+
+- **Where only 500 of 2500–5000 forget examples are reintroduced**, accuracy on the whole set
+  barely moves. For retrains it goes from 0.909 to 0.891 at mem-med, and moves by ±0.005 at the
+  random sets. The score is the starting accuracy.
+- **It climbs only where the whole set is reintroduced**: canary +0.39, rand-500 +0.05.
+- **At canary**, every model already stands out on its starting accuracy.
+- **Where relearning does add flags** (mem-low 8, rand-500 4), the unlearned models relearn
+  *less* than the retrains on average. So those flags are most likely damage or over-forgetting,
+  not hidden knowledge; the report now splits relearning-only flags into faster and slower.
+
+As configured, the reversibility audit has found no hidden knowledge in this study.
+
+### 5. SDE's statistic is inverted at mem-high too
+
+`sde_hsic` is −5.1 sd and `sde_margin` +1.7 at mem-high, both on the "not in training" side for
+M0. That matches its verdict (10 of 17 retrains flagged, 0 of 5 M0) and the population attack's
+inversion at the same strata.
+
+### 6. mem-high twins skipped: its oracle caches are empty files
+
+The three mem-high paired-oracle caches in the Stage 6 dataset raise EOFError: they are empty,
+from the earlier upload problem. They are caches only, so no record is affected and the runner
+recomputes them if ever needed. The seven measured conditions agree.
+
 ### Open before Stage 8
 
-1. **One CPU run**: the setup cells, then Step 4. It gives the guarded balanced accuracy, the
-   utility table that confirms the 5-point guard, the relearning check at all eight conditions,
-   and where the Stage 3–5 shards actually are.
-2. `runtime_s` is confounded with which account ran each seed: compare within an account. It
-   exists only in the records, so it waits on finding the shards.
+1. **Team: retire `activation_l2` from verdicts?** (§3).
+2. **One CPU run** (Step 4 only) for the faster/slower split of the relearning-only flags.
+3. `runtime_s` is confounded with which account ran each seed. It exists only in records, and
+   those are on the per-account datasets if anywhere.
 
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 

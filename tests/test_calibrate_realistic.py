@@ -427,6 +427,9 @@ class TestRelearningVsAccuracy:
         assert r.loc[PRIMARY, "flagged_by_start"] <= 2
         assert r.loc[PRIMARY, "flagged_by_relearn_only"] >= 20
         assert r.loc[PRIMARY, "n_retrain"] == 17
+        # ...and on the fast side: hidden knowledge, not damage.
+        assert r.loc[PRIMARY, "relearn_only_faster"] == r.loc[PRIMARY, "flagged_by_relearn_only"]
+        assert r.loc[PRIMARY, "relearn_only_slower"] == 0
 
     def test_where_relearning_is_the_starting_accuracy_it_adds_nothing(self, tables):
         r = tables["relearning_vs_accuracy"].set_index("forget_id")
