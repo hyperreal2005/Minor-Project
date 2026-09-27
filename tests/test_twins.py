@@ -71,3 +71,16 @@ def test_an_unreadable_cache_file_is_skipped(tmp_path):
     st.outputs_path(f"c10r18__unlearn__{COND}__finetune__train0").write_bytes(b"")
     rows = _by_metric(twin_effect(st, forget_id=COND, train_seeds=range(5), methods=["finetune"]))
     assert rows["js_forget"]["n_twin_pairs"] == 4
+
+
+def test_an_overflowed_cache_is_skipped_not_propagated_as_nan(tmp_path):
+    """The real run's mem-low CKA and rand-500 JS came back NaN: the destroyed control's cache
+    held inf from an fp16 overflow. That model is skipped; the rest are measured."""
+    st = _store(tmp_path, twin=True)
+    rid = f"c10r18__unlearn__{COND}__finetune__train2"
+    logits, _ = st.load_outputs(rid, forget_id=COND)
+    bad = logits["forget"].copy(); bad[0, 0] = np.inf
+    st.save_outputs(rid, {"forget": bad}, {"forget": np.arange(N) % K}, forget_id=COND)
+    rows = _by_metric(twin_effect(st, forget_id=COND, train_seeds=range(5), methods=["finetune"]))
+    assert np.isfinite(rows["js_forget"]["twin_advantage_sd"])
+    assert rows["js_forget"]["n_twin_pairs"] == 4

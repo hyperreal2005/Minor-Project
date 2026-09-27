@@ -834,10 +834,17 @@ c["ground_truth"] = c["ground_truth"].map({True: 1.0, False: 0.0})  # None -> Na
 print(c.groupby(["role", "method"])[["canary_top_wrong", "canary_acc", "canary_prob", "ground_truth"]]
        .mean(numeric_only=False).round(3), "\\n")
 
-print("CANARY VALIDITY -- each audit's verdicts against that ground truth (balanced accuracy)\\n")
+print("NATIVE POWER -- fraction of M0 each retrain-free audit's own rule detects\\n")
+print(nat.pivot_table(index="metric", columns="forget_id", values="native_tpr").round(2), "\\n")
+
+print("CANARY VALIDITY -- each audit's verdicts against the ground truth")
+print("(fp_retrain: retrains flagged -- the audit is invalid; fp_other: models with no residual")
+print(" association flagged -- in practice the destroyed control: damage mistaken for retention;")
+print(" n below 40 (35 for js_to_original, which excludes M0): verdicts undefined for some models)\\n")
 cv = pd.read_parquet("results/calibration/canary_validity.parquet")
-print(cv.pivot_table(index=["audit", "metric", "probe_set"], columns="kind",
-                     values="balanced_accuracy").round(2))
+cols = ["audit", "metric", "probe_set", "kind", "n", "tp", "fn", "tn", "fp_retrain",
+        "fp_other", "balanced_accuracy"]
+print(cv[[c for c in cols if c in cv]].round(2).to_string(index=False))
 """
 
 LOOK_CALIBRATION = """\

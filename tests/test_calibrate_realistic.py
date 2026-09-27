@@ -265,3 +265,32 @@ class TestProtocolAndSelfReference:
         assert "m0_tpr" not in js_orig or js_orig["m0_tpr"].isna().all()
         # ...while its calibration on retrains is still reported.
         assert js_orig["calibrated_fpr_n"].notna().all()
+
+
+class TestCanaryValiditySplit:
+    def test_false_positives_are_split_by_who_they_are(self, tables):
+        cv = tables["canary_validity"]
+        assert {"fp_retrain", "fp_other"} <= set(cv.columns)
+        assert (cv["fp_retrain"] + cv["fp_other"] == cv["fp"]).all()
+
+    def test_m0_is_not_counted_for_a_metric_defined_against_it(self, tables):
+        cv = tables["canary_validity"].set_index(["metric", "probe_set", "kind"])
+        full = cv.loc[("js_to_oracle", "forget", "calibrated"), "n"]
+        self_ref = cv.loc[("js_to_original", "forget", "calibrated"), "n"]
+        assert self_ref == full - 5  # the five M0 audits excluded
+
+    def test_the_canary_protocol_row_explains_its_floor(self, tables):
+        p = tables["relearning_protocol"].set_index("forget_id")
+        assert "floor ~ retrain expected" in p.loc["canary-500", "note"]
+        assert p.loc["rand-500", "note"] == ""
+
+
+def test_a_guard_metric_is_banded_but_never_scored_as_an_audit(tables):
+    """relearn_utility_drop says whether a recovery claim is void, not whether anything was
+    forgotten. On the real run it scored balanced accuracy 0.50 -- an 'audit at chance' that is
+    not an audit."""
+    assert "relearn_utility_drop" in set(tables["bands"]["metric"])
+    assert "relearn_utility_drop" not in set(tables["canary_validity"]["metric"])
+    v = tables["validity"]
+    g = v[v["metric"] == "relearn_utility_drop"]
+    assert len(g) and g["m0_tpr"].isna().all()

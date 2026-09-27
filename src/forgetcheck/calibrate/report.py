@@ -59,6 +59,13 @@ PROTOCOL_CONSTANTS = frozenset({"relearn_randinit_auc"})
 #: calibration showed js_to_original detecting M0 at 100% everywhere, for exactly that reason.
 M0_SELF_REFERENCED = frozenset({"js_to_original"})
 
+#: Guard metrics say whether *another* measurement can be trusted -- did relearning wreck the
+#: model? -- not whether anything was forgotten. They get a band (the guard needs a retrain
+#: reference) but are never scored as audits: no power on M0, no canary verdicts. Scored, the
+#: first real run put relearn_utility_drop at balanced accuracy 0.50, reading as an audit at
+#: chance when it is not an audit.
+GUARDS = frozenset({"relearn_utility_drop"})
+
 
 @dataclass(frozen=True)
 class CalibrationConfig:
@@ -197,10 +204,10 @@ def calibrate(df, *, registry, config: CalibrationConfig) -> dict:
             row.update(_with_ci("calibrated_fpr", *_rate(
                 loo_flags(oracles["value"].to_numpy(), direction=direction,
                           coverage=config.coverage))))
-            if metric not in M0_SELF_REFERENCED:
+            if metric not in M0_SELF_REFERENCED | GUARDS:
                 row.update(_with_ci("m0_tpr", *_rate(
                     [flag(float(v), band, direction) for v in m0["value"]])))
-            if len(m0) and band.sd == band.sd and metric not in M0_SELF_REFERENCED:
+            if len(m0) and band.sd == band.sd and metric not in M0_SELF_REFERENCED | GUARDS:
                 gap = abs(float(m0["value"].mean()) - band.mean)
                 row["m0_gap_sd"] = gap / band.sd if band.sd > 0 else float("inf")
                 row["low_discriminability"] = bool(gap < config.low_discriminability_sd * band.sd)
@@ -263,8 +270,16 @@ def _relearning_protocol(df):
         o_sd = float(oracle.std(ddof=1)) if len(oracle) > 1 else float("nan")
         f = float(floor.mean()) if len(floor) else float("nan")
         m = float(m0.mean()) if len(m0) else float("nan")
+        kind = c["forget_kind"].iloc[0] if "forget_kind" in c and len(c) else ""
         rows.append({
             "forget_id": cond,
+            # At the canary condition the reintroduced labels are *wrong*, and they contradict
+            # the retrain's knowledge of the true label, which a random-init network does not
+            # have. So there the floor is not a floor: "retrain no faster than random init" is
+            # the expected outcome -- the retrain carries no residual association -- not a
+            # protocol failure.
+            "note": ("canary: floor ~ retrain expected (wrong labels vs the retrain's true-label "
+                     "prior)" if kind == "canary" else ""),
             "randinit_auc": f,
             "oracle_auc_mean": o_mean, "oracle_auc_sd": o_sd, "oracle_n": int(len(oracle)),
             "m0_auc_mean": m, "m0_n": int(len(m0)),
@@ -304,11 +319,12 @@ def _canary(df, meas, registry, config):
     wide["ground_truth"] = wide.apply(truth, axis=1)
     wide["top_wrong_band_hi"] = top_band.hi
     labelled = wide.set_index("run_id")["ground_truth"]
+    role_of = wide.set_index("run_id")["role"]
 
     rows = []
     at = meas[meas["forget_id"] == cond]
     for (audit, metric, probe), g in at.groupby(["audit", "metric", "probe_set"]):
-        if metric not in registry:
+        if metric not in registry or metric in GUARDS:
             continue
         direction = registry[metric].direction
         rule = native_rule_for(audit, metric)
@@ -330,18 +346,27 @@ def _canary(df, meas, registry, config):
                     fpr=config.tpr_fpr)
 
         for kind, v in verdicts.items():
-            pairs = [(v[rid], labelled.get(rid)) for rid in v
+            # M0 is excluded for metrics defined against M0 itself: its value is fixed by
+            # construction, so counting it would score the audit on a tautology.
+            rids = [rid for rid in v if not (metric in M0_SELF_REFERENCED
+                                             and role_of.get(rid) == "base")]
+            pairs = [(v[rid], labelled.get(rid), role_of.get(rid)) for rid in rids
                      if v[rid] is not None and labelled.get(rid) is not None]
             if not pairs:
                 continue
-            tp = sum(1 for f, t in pairs if f and t)
-            fp = sum(1 for f, t in pairs if f and not t)
-            tn = sum(1 for f, t in pairs if not f and not t)
-            fn = sum(1 for f, t in pairs if not f and t)
+            tp = sum(1 for f, t, _ in pairs if f and t)
+            fp = sum(1 for f, t, _ in pairs if f and not t)
+            tn = sum(1 for f, t, _ in pairs if not f and not t)
+            fn = sum(1 for f, t, _ in pairs if not f and t)
             tpr = tp / (tp + fn) if tp + fn else float("nan")
             tnr = tn / (tn + fp) if tn + fp else float("nan")
+            # False positives split by who they are. A retrain flagged is an invalid audit; an
+            # unlearned model with no residual association flagged -- in practice the destroyed
+            # control -- is an audit that cannot tell *damage* from *retained influence*.
             rows.append({"audit": audit, "metric": metric, "probe_set": probe, "kind": kind,
                          "tp": tp, "fp": fp, "tn": tn, "fn": fn, "tpr": tpr, "tnr": tnr,
+                         "fp_retrain": sum(1 for f, t, r in pairs if f and not t and r == "oracle"),
+                         "fp_other": sum(1 for f, t, r in pairs if f and not t and r != "oracle"),
                          "balanced_accuracy": np.nanmean([tpr, tnr]), "n": len(pairs)})
     return wide, pd.DataFrame(rows)
 

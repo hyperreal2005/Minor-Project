@@ -310,3 +310,32 @@ class TestOutputsCache:
         st.load_outputs(rid, forget_id="canary-500", label_scheme="clean")
         with pytest.raises(StoreError):
             st.load_outputs(rid, forget_id="canary-500", label_scheme="canary")
+
+
+class TestActivationsNeverOverflow:
+    """The destroyed control's activations exceed fp16's range. Stored as fp16 they became inf,
+    and any audit re-run from the cache would have disagreed with the live run that wrote it."""
+
+    RID = "c10r18__unlearn__mem-low-3000__neggrad__train0"
+
+    def test_an_overflowing_model_is_stored_in_float32(self, tmp_path):
+        import numpy as np
+
+        from forgetcheck.registry import ArtifactStore
+
+        st = ArtifactStore(tmp_path)
+        big = np.full((4, 3), 1e6, dtype=np.float32)
+        st.save_activations(self.RID, {"layer4": big})
+        got, _ = st.load_activations(self.RID)
+        assert np.isfinite(got["layer4"]).all()
+        np.testing.assert_allclose(got["layer4"], big)
+
+    def test_an_ordinary_model_keeps_fp16(self, tmp_path):
+        import numpy as np
+
+        from forgetcheck.registry import ArtifactStore
+
+        st = ArtifactStore(tmp_path)
+        st.save_activations(self.RID, {"layer4": np.ones((4, 3), dtype=np.float32)})
+        with np.load(st.activations_path(self.RID)) as z:
+            assert z["act__layer4"].dtype == np.float16

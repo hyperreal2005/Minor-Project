@@ -249,6 +249,14 @@ class _ConditionCache:
                 if not self.ctx.store.has_activations(rid):
                     return None
                 acts, _ = self.ctx.store.load_activations(rid)
+            # A non-finite cached array is almost always an fp16 overflow from before the cache
+            # widened such models to float32 -- the destroyed control's -- not a property of the
+            # model. Recompute rather than serve it: the live pass is what the records came from.
+            for name, arr in (*logits.items(), *acts.items()):
+                if not np.isfinite(arr).all():
+                    self.cache_misses.append(
+                        (rid, f"non-finite values in cached {name!r} (fp16 overflow); recomputed"))
+                    return None
             return ModelOutputs(logits=logits, labels=labels, activations=acts)
         except Exception as exc:  # noqa: BLE001 -- deliberately broad, see docstring
             self.cache_misses.append((rid, f"{type(exc).__name__}: {exc}"))
@@ -961,13 +969,19 @@ def run_audits(
             written += len(records)
             print(f" {len(records)} records in {time.perf_counter() - t0:.1f}s", flush=True)
 
-        if cache.cache_misses:
-            n = len(cache.cache_misses)
-            rid0, why0 = cache.cache_misses[0]
-            print(f"  {forget_id}: {n} cached output file(s) were unreadable and were recomputed "
-                  f"and overwritten -- e.g. {rid0}: {why0}. If this is most of them, the "
-                  f"stage-6 dataset was probably uploaded from symlinks rather than their "
-                  f"targets; check with: find /kaggle/input -name '*.npz' -size -1c | wc -l",
+        overflowed = [m for m in cache.cache_misses if m[1].startswith("non-finite")]
+        unreadable = [m for m in cache.cache_misses if not m[1].startswith("non-finite")]
+        if overflowed:
+            print(f"  {forget_id}: {len(overflowed)} cached output file(s) held inf/nan from an "
+                  f"fp16 overflow and were recomputed and re-cached in float32 -- e.g. "
+                  f"{overflowed[0][0]}. Expected only for the destroyed neggrad control.",
+                  flush=True)
+        if unreadable:
+            rid0, why0 = unreadable[0]
+            print(f"  {forget_id}: {len(unreadable)} cached output file(s) were unreadable and "
+                  f"were recomputed and overwritten -- e.g. {rid0}: {why0}. If this is most of "
+                  f"them, the stage-6 dataset was probably uploaded from symlinks rather than "
+                  f"their targets; check with: find /kaggle/input -name '*.npz' -size -1c | wc -l",
                   flush=True)
         if cache.missing:
             uniq = sorted(set(cache.missing))

@@ -346,3 +346,43 @@ def test_an_ensemble_oracle_writes_anchors_only_under_real_run_ids(tmp_path, cap
     tables = calibrate(df, registry=default_registry(),
                        config=CalibrationConfig(primary_condition="rand-500"))
     assert len(tables["validity"]) > 0
+
+
+def test_an_overflowed_cache_is_recomputed_not_served(tmp_path, capsys):
+    """The destroyed neggrad control overflowed fp16 in the activations cache, and on rand-500 in
+    an early logits cache. Served, inf would have made its CKA/JS undefined on any cached re-run
+    where the live run had recorded a finite value. It must be recomputed and replaced."""
+    from forgetcheck.audits.runner import run_audits
+    from forgetcheck.registry import read_records
+
+    ctx = _Ctx(tmp_path)
+    target = _seed_store(ctx)
+    run_audits(ctx, device="cpu", batch_size=64)
+    live = read_records(ctx.records_dir)
+    live = live[(live["run_id"] == target) & (live["audit"] == "representation")]
+    capsys.readouterr()
+
+    acts, probe_ids = ctx.store.load_activations(target)
+    original = {k: v.copy() for k, v in acts.items()}
+    layer = sorted(acts)[0]
+    acts[layer] = acts[layer].astype(np.float32); acts[layer][0, 0] = np.inf
+    ctx.store.save_activations(target, acts, probe_ids=probe_ids, dtype="float32")
+
+    rc = run_audits(ctx, device="cpu", batch_size=64, audits=["representation"], force=True)
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "fp16 overflow" in out and "unreadable" not in out
+    # Replaced by a recomputation that reproduces the cache the first run wrote.
+    got, _ = ctx.store.load_activations(target)
+    assert set(got) == set(original)
+    for k in original:
+        np.testing.assert_allclose(got[k], original[k], rtol=2e-3, atol=1e-6)
+
+    # Nothing became undefined. (Values are not compared with the live run's: there the oracle
+    # reference was live float32, here it is read from its fp16 cache, which moves a distance of
+    # exactly 0 -- this fixture's target is a copy of its oracle -- to ~1e-2. Between different
+    # networks, rounding adds only ~eps^2/2D to a distance D; negligible against the band.)
+    redo = read_records(ctx.records_dir)
+    redo = redo[(redo["run_id"] == target) & (redo["audit"] == "representation")]
+    assert sorted(redo["metric"]) == sorted(live["metric"])
+    assert redo["value"].astype(float).notna().sum() == live["value"].astype(float).notna().sum()

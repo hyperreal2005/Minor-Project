@@ -252,6 +252,18 @@ class ArtifactStore:
             raise StoreError(f"{run_id}: refusing to save an empty activation set")
 
         np_dtype = np.float16 if dtype == "float16" else np.float32
+        # fp16 unless it would overflow. The destroyed neggrad control produces activations
+        # beyond fp16's 65504; stored as fp16 they became inf, so any audit re-run from the cache
+        # would have called that model undefined where the live run had recorded a finite value
+        # -- a cache that changes a result. Such a model is stored in float32 instead; every
+        # other model keeps the fp16 saving.
+        if np_dtype == np.float16:
+            fp16_max = float(np.finfo(np.float16).max)
+            for arr in acts.values():
+                a = np.asarray(arr)
+                if a.size and np.nanmax(np.abs(a)) > fp16_max:
+                    np_dtype = np.float32
+                    break
         payload: dict[str, np.ndarray] = {}
         n_rows: set[int] = set()
         for layer, arr in acts.items():

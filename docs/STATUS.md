@@ -1626,17 +1626,152 @@ for most metrics at most conditions. That is the constructive result.
 - `relearn_randinit_auc` rows: one protocol constant per condition, not a candidate metric. It
   now feeds the relearning protocol check (floor < retrain < M0) that had never been computed.
 
+## STAGE 7, second read — canary validity, relearning protocol, shared initialisation (27 Sep 2026)
+
+The rest of the calibration output. Canary: 40 models — 5 M0, 5 oracles, 30 unlearned.
+
+### 6. The canary ground truth holds on real models — and only the destroyed control forgets
+
+Means over 5 seeds:
+
+| | M0 | oracle | finetune | l1sparse | neggrad | neggradplus | salun | scrub |
+|---|---|---|---|---|---|---|---|---|
+| `canary_top_wrong` | 0.710 | 0.128 | 0.529 | 0.370 | **0.108** | 0.555 | 0.470 | 0.616 |
+| `canary_acc` | 0.386 | 0.014 | 0.170 | 0.108 | **0.096** | 0.181 | 0.146 | 0.186 |
+
+- Retrains sit at chance among the nine wrong labels (1/9 = 0.111); M0 far above. M0 memorised
+  the canaries only partly (`canary_acc` 0.386).
+- `canary_acc` gets the destroyed control wrong: 0.096 is 7× the oracle's 0.014, because a
+  constant predictor hits the canary label ~1 time in 10 by accident, and it cannot separate
+  neggrad from l1sparse (0.108). `canary_top_wrong` puts neggrad at the oracle's level, where it
+  belongs. This is the real-data case for the PROPOSED metric.
+- **Every non-destructive method keeps the canary association** (0.37–0.62, all 25 labelled
+  positive). The only method that removes it is the one that destroys the model.
+
+### 7. Retrain-referenced audits cannot tell a model that remembers from one that is broken
+
+Balanced accuracy against that ground truth: 30 positives (M0 + 25 unlearned), 10 negatives
+(5 oracles + 5 destroyed neggrad).
+
+- **Exactly 0.75 for most calibrated audits**: JS, logit L2, `pred_agreement`, the three
+  population-MIA metrics, `mia_acc_rmia`, `relearn_auc`, layer3–4 CKA, layer4 activation L2,
+  `sde_hsic`. 0.75 means TPR + TNR = 1.5. Every oracle passed (calibrated
+  FPR 0 at canary for all of these) and M0 power is 1.0, so the reading is TPR 1, TNR 0.5:
+  every rememberer flagged, every oracle passed, **every destroyed control flagged**. A distance
+  from the retrains says "not a retrain", which is as true of a broken model as of one that
+  remembers. The re-run's `fp_other` column confirms or refutes this.
+- The **native** population MIA also scores 0.75, **the opposite way round**. Its native FPR at
+  canary is 5/5, so the only 5 true negatives it can have are the destroyed controls. TNR 0.5
+  forces TPR 1: every retrain flagged, the constant predictor passed (AUC ≈ 0.5). Same number,
+  opposite failure.
+- **Above 0.75**: `js_to_original` (forget) 1.00, `relearn_t80` 0.93, `sde_verdict` (native)
+  0.80. Two possible mechanisms, not yet distinguished: they classify the destroyed control
+  correctly (`js_to_original` measures *toward M0*, and a broken model is far from M0 too), or
+  its verdict is undefined and it drops out of the count. The results cell now prints `n`.
+- **Worse than chance**: CKA at layer1 0.20 (linear and RBF), layer2 0.33 / 0.47. Early layers
+  are generic, M0's included, so rememberers sit inside the retrain band there while the wrecked
+  control does not: the verdicts invert. Only late layers carry forget-set-specific structure.
+  Layer4, the layer the tables report, is at 0.75 like the rest. Which layer is the
+  representation audit's headline is not registered; this is evidence for layer4.
+- **RMIA** 0.70 / 0.53 calibrated, 0.50 / 0.58 native (AUC / TPR@1%). Its canary calibrated FPR
+  is 1/5 on both, so it errs on retrains too; its native power is now printed.
+- `js_to_original` counted M0 as a true positive by construction. M0 is now excluded (n = 35).
+  At 1.00 every counted positive was flagged, so the exclusion cannot lower it.
+- `relearn_utility_drop` scored 0.50. It is a **guard** (did relearning wreck the model?), not
+  an audit of forgetting. It is now banded but never scored: no canary verdicts, no M0 power.
+
+The design already commits to pairing privacy verdicts with the retained-utility guard (review
+§M1, after EasyDUB). This shows the pairing is needed for every retrain-referenced audit, and
+the calibration does not yet apply it. Proposal below.
+
+### 8. The relearning protocol holds where it can be tested; at canary its floor is not a floor
+
+| | canary | mem-high | mem-low | mem-med | rand-500 | rand-2500 | rand-3000 | rand-5000 |
+|---|---|---|---|---|---|---|---|---|
+| random init | 0.409 | 0.199 | 0.355 | 0.218 | 0.413 | 0.226 | 0.232 | 0.207 |
+| retrain (mean ± sd) | 0.399 ± .015 | 0.575 ± .007 | 0.998 ± .000 | 0.891 ± .005 | 0.982 ± .001 | 0.926 ± .003 | 0.933 ± .003 | 0.928 ± .002 |
+| M0 | 0.751 | 0.985 | 1.000 | 0.997 | 1.000 | 0.998 | 0.998 | 0.998 |
+| M0 − retrain (sd) | 24.2 | 59.5 | 4.2 | 19.9 | 18.0 | 20.7 | 21.4 | 29.9 |
+
+- floor < retrain < M0 at 7 of 8 conditions (n = 17 retrains at mem-high, 5 elsewhere).
+- **canary**: the floor is at the retrain (0.409 vs 0.399 ± 0.015). A retrain knows the *true*
+  labels, which the canary labels contradict, so its prior works against it; random init has no
+  prior to fight. "Relearns no faster than random init" is exactly "no residual association".
+  The protocol's essential claim, that reintroduction alone cannot produce M0's recovery, holds:
+  M0 is 24 sd above. The table now carries this note.
+- **rand-* and mem-low**: retrains start at 0.93–0.998 on the forget set before any relearning
+  step (`relearning.py` already notes this for rand-500). M0's advantage there is 0.002 (mem-low)
+  to ~0.07 raw, largely the train/test gap at step 0. The 18–30 sd separations come from oracle
+  sds ≤ 0.005. So "`relearn_auc` detects M0 everywhere" is mostly *initial accuracy*, not
+  reversibility. Relearning's distinctive evidence is at canary and mem-high, where retrains start
+  low (`relearn_norm` is already undefined elsewhere by design). Stage 8 check below.
+
+### 9. Shared initialisation: nothing in outputs; a small, consistent trace in layer4
+
+| | canary | mem-high | mem-low | mem-med | rand-500 | rand-2500 | rand-3000 | rand-5000 |
+|---|---|---|---|---|---|---|---|---|
+| JS: twin advantage (sd) | 0.30 | 0.69 | −0.02 | −0.33 | — | 0.12 | −0.02 | 0.20 |
+| JS: shift / band half-width | 0.04 | 0.04 | 0.00 | −0.05 | — | 0.01 | 0.00 | 0.03 |
+| CKA layer4: twin advantage (sd) | 0.51 | 1.04 | — | 0.49 | 1.20 | 0.73 | 0.37 | 0.14 |
+| CKA layer4: shift / band half-width | 0.07 | 0.07 | — | 0.05 | 0.12 | 0.10 | 0.04 | 0.02 |
+
+- **JS**: both signs, |shift| ≤ 5.4% of the band half-width. No effect on outputs.
+- **CKA layer4**: positive at all 7 measured conditions. A real trace of the shared initialisation,
+  moving the ensemble mean by 2–12% of the half-width, in the direction that flatters every method.
+  Only a verdict within 0.12 half-widths of the band edge could flip. **No recompute proposed**;
+  the bound is stated. Stage 8 can count the verdicts inside that margin.
+- The `twin_mean` / `other_mean` levels include the destroyed control, so they are not typical
+  values; the diagnostic is the within-model difference.
+- **The two blank cells** (mem-low CKA, rand-500 JS) and the RuntimeWarnings: the destroyed
+  neggrad's values exceed fp16's 65504, and its caches held inf. That is its activations at
+  mem-low (activations are cached fp16 by default) and its logits at rand-500 (cached fp16 by the
+  first audit run, before logits moved to float32). **No recorded value is affected**: the
+  audits computed live in float32, and relearning reads weights. Fixed at the source (below);
+  re-running `diagnose-twins` fills the cells without the destroyed model.
+
+### 10. Minor: cached references differ from live ones by fp16 rounding
+
+A reference read from its fp16 cache (any later session) differs from the same reference computed
+live by fp16 rounding. For a distance *D* between different networks that adds ~ε²/2D:
+negligible against every band. It shows only where a model is compared with an exact copy of
+itself (the e2e fixture: 0 → ~0.01). Recorded so the e2e test's tolerance is understood.
+
+### Changes (27 Sep)
+
+- `store.save_activations`: fp16 unless a value would overflow, then float32 (only the destroyed
+  control pays the size).
+- `runner._from_cache`: a non-finite cached array is a miss: recomputed, re-cached, reported
+  separately from unreadable files (whose message blames symlink uploads).
+- `twins`: skips non-finite caches rather than propagating NaN.
+- `report`: canary false positives split into `fp_retrain` (the audit is invalid) and `fp_other`
+  (damage mistaken for retention); M0 excluded for `js_to_original`; `GUARDS` banded, not scored;
+  protocol table notes the canary floor.
+- Results cell: native power, and canary counts (`n`, tp, fn, tn, `fp_retrain`, `fp_other`).
+- Tests: 548 unit (+7), 11 e2e (+1). The e2e test puts inf into a runner-written cache and checks
+  it is recomputed, re-cached finite, and that no metric turns undefined.
+
+### Proposals for Stage 8 — team decisions
+
+1. **Guarded verdicts.** Apply the registered retained-utility guard to every retrain-referenced
+   verdict. flagged + utility inside the retrain band → "retains"; flagged + utility below it →
+   "damaged". The inputs already exist (`test_acc` / `retain_acc` under `audit="meta"`). The
+   threshold is the team's call: unlearning costs some utility, so "below the band" may be too
+   strict, but any sane threshold catches neggrad (test accuracy 0.10). Testable on the canary:
+   the 0.75 cluster should move toward 1.0.
+2. **Effect sizes and minimum meaningful effects** per family (first read): `relearn_auc` flags M0
+   at mem-low on a 0.002 difference.
+3. **Relearning vs initial accuracy**: correlate `relearn_auc` with `forget_acc` (meta) across the
+   unlearned models. If near 1 at rand-*/mem-low, relearning adds nothing there, and its claims
+   rest on canary and mem-high.
+
 ### Open before Stage 8
 
-1. **Shared initialisation.** `make_resnet18(seed=...)` gives M0 *s* and paired oracle *s*
-   identical initial weights, by design. Every unlearned model's reference ensemble therefore
-   contains its initialisation twin, while the band (oracle vs oracle) never does. If a shared
-   init keeps networks measurably closer, the oracle-referenced audits read unlearned models as
-   more retrain-like than they are. `forgetcheck diagnose-twins` measures it from the cache and
-   scores the shift against the band half-width; if it is a material fraction, the fix is to
-   exclude the twin exactly as leave-one-out excludes an oracle from its own band.
-2. The relearning protocol table and canary validity — now printed by the results cell.
-3. **`canary_top_wrong` still needs the four-person sign-off** (PROPOSED in `metrics.yaml`).
+1. **Re-run the CPU cells** (calibrate → results → diagnose-twins) for the `fp_other` split,
+   `n`, native power and the two twin cells. No GPU, no re-audit.
+2. **`canary_top_wrong` still needs the four-person sign-off** (PROPOSED in `metrics.yaml`). §6
+   is the evidence.
+3. The three proposals above.
+4. `runtime_s` is confounded with which account ran each seed: compare within an account.
 
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 

@@ -78,6 +78,8 @@ def twin_effect(
             return None  # unreadable cache: skip it, never fail the diagnostic
         if "forget" not in logits or layer not in acts:
             return None
+        if not (np.isfinite(logits["forget"]).all() and np.isfinite(acts[layer]).all()):
+            return None  # an fp16-overflowed cache (the destroyed control's): skip, never NaN
         return logits["forget"], acts[layer]
 
     oracles = {s: load(r) for s, r in oracle_ids.items()}
