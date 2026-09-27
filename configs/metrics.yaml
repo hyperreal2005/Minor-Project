@@ -264,8 +264,10 @@ meta:
     oracle_ref: true
     probe_sets: [canary]
     doc: Fraction of canaries still predicted as their assigned wrong label.
-  # PROPOSED (25 Sep 2026), pending the four-person sign-off this file requires. Needed because
-  # canary_acc and canary_prob above mis-score the collapsed control -- see the doc.
+  # APPROVED 27 Sep 2026 -- the four-person sign-off this file requires (proposed 25 Sep).
+  # Needed because canary_acc and canary_prob above mis-score the collapsed control -- see the
+  # doc. The real canary run bore it out: canary_acc put the destroyed neggrad at 7x the oracle
+  # (0.096 vs 0.014), canary_top_wrong at the oracle's level (0.108 vs 0.128).
   canary_top_wrong:
     family: meta
     direction: closer_to_oracle

@@ -116,6 +116,21 @@ calibration:
   # Low-discriminability flag: fires when |m(M0) - mean(m(Mr))| falls inside the ensemble's own
   # noise band, meaning the setting cannot distinguish unlearning quality. Marked, not scored.
   low_discriminability_sd: 1.0
+  # The same mark on a raw scale, for metrics that are proportions (accuracies, agreement, MIA
+  # AUC and TPR): a cell whose M0-to-retrain gap is below this many points is marked, not scored.
+  # The sd rule alone cannot see a ceiling -- relearn_auc at mem-low separates M0 by "4.2 sd" on
+  # a raw gap of 0.002, because the retrains all sit at 0.998. 0.02 is relearning.min_anchor_gap,
+  # the floor the reversibility family already applies to exactly this denominator. Adopted 27 Sep
+  # 2026 on the team's delegation (STATUS.md, Stage 7 third read).
+  min_effect: 0.02
+  # Utility guard on every retrain-referenced verdict. A model whose test accuracy is more than
+  # this many points below the retrain mean is "damaged", and a flag on it is not read as
+  # retained influence: "unlike a retrain" is as true of a broken model as of one that remembers,
+  # and at the canary condition every calibrated audit flagged the destroyed control. The same 5
+  # points relearning.max_utility_drop_pp registered for the same purpose -- one guard, one
+  # number. Adopted 27 Sep 2026 on the team's delegation, provisional until the utility table
+  # shows no non-destructive method near it.
+  utility_guard_pp: 5.0
 
 agreement:
   # The unit of analysis is the model instance, not the method. Ranking six methods and

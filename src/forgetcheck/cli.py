@@ -457,16 +457,12 @@ def cmd_calibrate(args) -> int:
         n = len(tables[path.stem])
         print(f"  {path.stem:16s} {n:6d} rows -> {path}")
 
-    v = tables["validity"]
-    if len(v):
+    if len(tables["validity"]):
+        from .calibrate.show import print_report
+
         roles = df.groupby("role")["run_id"].nunique().to_dict()
-        print(f"\nmodels by role: {roles}")
-        cols = [c for c in ("forget_id", "audit", "metric", "native_fpr", "native_fpr_n",
-                            "calibrated_fpr", "calibrated_fpr_n", "m0_tpr",
-                            "low_discriminability") if c in v]
-        head = v[v["probe_set"].isin(["forget", "layer4"])][cols]
-        print("\nvalidity, forget probe (full table in validity.parquet):")
-        print(head.round(3).to_string(index=False))
+        print(f"\nmodels by role: {roles}\n")
+        print_report(out)
     return 0
 
 
@@ -485,9 +481,16 @@ def cmd_diagnose_twins(args) -> int:
     ctx = _ctx(args)
     rows = []
     for cond in sorted(ctx.all_forget_ids()):
+        problems: list[tuple[str, str]] = []
         got = twin_effect(ctx.store, forget_id=cond, train_seeds=ctx.seeds["train"],
-                          methods=CORE_METHODS)
-        print(f"  {cond}: {'measured' if got else 'skipped (fewer than 3 cached oracles)'}")
+                          methods=CORE_METHODS, problems=problems)
+        if got:
+            print(f"  {cond}: measured")
+        else:
+            bad = [p for p in problems if "__oracle__" in p[0]]
+            why = f"; e.g. {bad[0][0]}: {bad[0][1]}" if bad else ""
+            print(f"  {cond}: skipped -- fewer than 3 usable oracle caches "
+                  f"({len(bad)} unusable{why})")
         rows += got
     if not rows:
         print("no cached outputs to measure; run the audits first")

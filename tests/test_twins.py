@@ -84,3 +84,17 @@ def test_an_overflowed_cache_is_skipped_not_propagated_as_nan(tmp_path):
     rows = _by_metric(twin_effect(st, forget_id=COND, train_seeds=range(5), methods=["finetune"]))
     assert np.isfinite(rows["js_forget"]["twin_advantage_sd"])
     assert rows["js_forget"]["n_twin_pairs"] == 4
+
+
+def test_a_skipped_condition_says_why(tmp_path):
+    """The real run skipped mem-high with no reason given. Every unusable cache is reported."""
+    st = _store(tmp_path, twin=True, n_oracles=2)
+    rid = run_id(role="oracle", forget=COND, seed=1, seed_kind="train")
+    st.outputs_path(rid).write_bytes(b"")
+    problems = []
+    assert twin_effect(st, forget_id=COND, train_seeds=range(5), methods=["finetune"],
+                       problems=problems) == []
+    why = dict(problems)
+    assert why[run_id(role="oracle", forget=COND, seed=3, seed_kind="train")] == \
+        "not cached in this session"
+    assert why[rid].startswith("unreadable (")

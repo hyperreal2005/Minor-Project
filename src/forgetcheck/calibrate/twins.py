@@ -55,12 +55,16 @@ def twin_effect(
     train_seeds: Iterable[int],
     methods: Iterable[str],
     layer: str = "layer4",
+    problems: list | None = None,
 ) -> list[dict]:
     """One row per metric (forget-probe JS, `layer` CKA) for one condition.
 
     Positive `twin_advantage_sd` means the twin oracle is *closer* than the other oracles, in
     units of the oracle-vs-oracle spread. `ensemble_shift` is how much the twin moves the
     five-oracle mean the audits actually use (one fifth of the twin/non-twin gap).
+
+    Every cache that cannot be used is appended to ``problems`` as ``(run_id, reason)``, so a
+    skipped condition says why rather than leaving it to be guessed.
     """
     from ..registry import run_id
 
@@ -68,18 +72,23 @@ def twin_effect(
     oracle_ids = {s: run_id(role="oracle", forget=forget_id, seed=s, seed_kind="train")
                   for s in seeds}
 
+    def skip(rid, why):
+        if problems is not None:
+            problems.append((rid, why))
+
     def load(rid):
         if not (store.has_outputs(rid) and store.has_activations(rid)):
-            return None
+            return skip(rid, "not cached in this session")
         try:
             logits, _ = store.load_outputs(rid, forget_id=forget_id)
             acts, _ = store.load_activations(rid)
-        except Exception:
-            return None  # unreadable cache: skip it, never fail the diagnostic
+        except Exception as exc:  # unreadable cache: skip it, never fail the diagnostic
+            return skip(rid, f"unreadable ({type(exc).__name__})")
         if "forget" not in logits or layer not in acts:
-            return None
+            return skip(rid, f"no forget logits or no {layer}")
         if not (np.isfinite(logits["forget"]).all() and np.isfinite(acts[layer]).all()):
-            return None  # an fp16-overflowed cache (the destroyed control's): skip, never NaN
+            # an fp16-overflowed cache (the destroyed control's): skip, never NaN
+            return skip(rid, "non-finite (fp16 overflow)")
         return logits["forget"], acts[layer]
 
     oracles = {s: load(r) for s, r in oracle_ids.items()}
