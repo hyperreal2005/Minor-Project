@@ -118,23 +118,23 @@ def _with_ci(prefix: str, k: int, n: int) -> dict:
     }
 
 
-def _is_ensemble_oracle(row) -> bool:
-    return row["role"] == "oracle" and not _isnan(row.get("oracle_seed"))
+def _band_members(oracles, metric: str):
+    """The oracle rows that may form the band for ``metric``.
 
+    For self-anchored metrics only the ensemble oracles -- independent retrains, identified by a
+    non-null ``oracle_seed`` -- count; a paired oracle is its own anchor there.
 
-def _isnan(x) -> bool:
-    """True for None, NaN and pd.NA alike.
-
-    Whether a nullable integer column comes back as float NaN or as pd.NA depends on the pandas
-    and pyarrow versions, and Kaggle's are not the laptop's. `x != x` works for NaN and raises
-    on pd.NA ("boolean value of NA is ambiguous"); pd.isna handles every case.
+    A vectorised column test, deliberately not ``DataFrame.apply(..., axis=1)``. On an EMPTY
+    frame ``apply`` returns an empty *float* Series rather than a boolean one, and pandas treats a
+    non-boolean key as a list of column names -- so ``oracles[mask]`` came back with no columns
+    at all, and the first Kaggle calibration died on ``oracles["value"]``. The frame was empty
+    for `relearn_norm` at conditions where every oracle's value was undefined (anchor gap under
+    `min_anchor_gap`) while some unlearned models' were not. ``notna()`` is also the null test
+    that works for NaN and pd.NA alike.
     """
-    import pandas as pd
-
-    try:
-        return bool(pd.isna(x))
-    except (TypeError, ValueError):
-        return False
+    if metric in SELF_ANCHORED:
+        return oracles[oracles["oracle_seed"].notna()]
+    return oracles
 
 
 # --------------------------------------------------------------------------- the calibration
@@ -155,9 +155,7 @@ def calibrate(df, *, registry, config: CalibrationConfig) -> dict:
         direction = registry[metric].direction
         rule = native_rule_for(audit, metric)
 
-        oracles = g[g["role"] == "oracle"]
-        if metric in SELF_ANCHORED:
-            oracles = oracles[oracles.apply(_is_ensemble_oracle, axis=1)]
+        oracles = _band_members(g[g["role"] == "oracle"], metric)
         m0 = g[g["role"] == "base"]
         unlearned = g[g["role"] == "unlearn"]
 
@@ -267,9 +265,7 @@ def _canary(df, meas, registry, config):
             continue
         direction = registry[metric].direction
         rule = native_rule_for(audit, metric)
-        oracles = g[g["role"] == "oracle"]
-        if metric in SELF_ANCHORED:
-            oracles = oracles[oracles.apply(_is_ensemble_oracle, axis=1)]
+        oracles = _band_members(g[g["role"] == "oracle"], metric)
         n_probe = int(g["n_probe"].iloc[0])
 
         verdicts: dict[str, dict[str, bool | None]] = {"calibrated": {}, "native": {}}

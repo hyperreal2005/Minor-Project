@@ -41,6 +41,7 @@ artifacts/
 results/records/*
 results/curves/*
 results/figures/*
+results/calibration/*
 !results/**/.gitkeep
 
 # --- editors / OS -----------------------------------------------------------

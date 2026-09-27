@@ -28,7 +28,7 @@ genuinely unresolved — as opposed to merely unwritten.
 > Plan stage 4 is "write the unlearning methods"; queue stage 4 is shadows. Read the CLI's
 > `status` output for the queue meaning.
 
-**Test suite: 521 passing** (+11 `slow`, incl. the Stage 6 end-to-end) (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
+**Test suite: 533 passing** (+11 `slow`, incl. the Stage 6 end-to-end) (plus 1 `slow` end-to-end, run with `-m slow`). Run with `venv/Scripts/python.exe -m pytest tests/`.
 
 ---
 
@@ -1524,6 +1524,30 @@ three more things:
   notebook after a push kept the previous code. Now checks out `origin/<branch>` detached (falling
   back to a sha), in all six notebooks. The `pinned at <sha>` line is the check: it must show the
   commit that was pushed.
+
+## Stage 7 calibration crashed on `KeyError: 'value'` — a pandas empty-frame trap (27 Sep 2026)
+
+Steps 1–3 (ground truth, 52 oracles, 40 M0 runs) completed on Kaggle; the CPU-only `calibrate`
+step then failed. The band filter for self-anchored metrics was
+`oracles[oracles.apply(f, axis=1)]`. On an **empty** frame, `DataFrame.apply(..., axis=1)`
+returns an empty *float* Series, not a boolean one, and pandas treats a non-boolean key as a list
+of column names: the filtered frame came back with **no columns**. It was empty for
+`relearn_norm` at conditions where every oracle's value was undefined (anchor gap just under
+`min_anchor_gap` in the Stage 7 session's runs) while some unlearned models' values from Stage 6
+were not — a combination no test had produced. Now a vectorised `oracle_seed.notna()`, correct
+at any size and for NaN and pd.NA alike.
+
+**The test that should have existed**, `tests/test_calibrate_realistic.py`: a record set with the
+real structure — eight conditions, three roles, the twelve ensemble oracles at the primary
+condition, the shared clean-base run_id across seven conditions, undefined rows, the
+empty-oracle `relearn_norm` group, canary ground truth, superseded anchor rows, Stage 5 `meta`
+rows — written through `write_records`, read back through `load_audit_records` (real Parquet
+dtypes), and run through `cmd_calibrate` and the notebook's results cell verbatim. Verified to
+fail with the exact Kaggle error when the old filter is restored. The earlier calibration tests
+used hand-built DataFrames, whose dtypes and group shapes the real loader does not produce.
+
+Nothing is lost: calibration only reads records. After the fix is pushed, the same session
+re-runs the install cell (which follows `origin/main` since d8ad8cb) and then `calibrate`.
 
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 
