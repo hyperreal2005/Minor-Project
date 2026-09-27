@@ -98,3 +98,15 @@ def test_a_skipped_condition_says_why(tmp_path):
     assert why[run_id(role="oracle", forget=COND, seed=3, seed_kind="train")] == \
         "not cached in this session"
     assert why[rid].startswith("unreadable (")
+
+
+def test_l2_twin_is_detected_and_absent_for_independent_models(tmp_path):
+    """activation_l2 compares neuron i with neuron i, so a twin whose neurons line up with the
+    candidate's reads as close; the diagnostic reports it beside JS and CKA."""
+    twin = _by_metric(twin_effect(_store(tmp_path / "a", twin=True), forget_id=COND,
+                                  train_seeds=range(5), methods=["finetune"]))
+    assert twin["l2_layer4"]["twin_advantage_sd"] > 5
+    assert twin["l2_layer4"]["twin_mean"] < twin["l2_layer4"]["other_mean"]
+    indep = _by_metric(twin_effect(_store(tmp_path / "b", twin=False), forget_id=COND,
+                                   train_seeds=range(5), methods=["finetune"]))
+    assert abs(indep["l2_layer4"]["twin_advantage_sd"]) < 2

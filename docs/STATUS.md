@@ -1844,14 +1844,27 @@ relearning adds nothing to accuracy there, and its claims rest on the conditions
 
 ## STAGE 7, fourth read — the counts (27 Sep 2026)
 
-### The run lacked the Stage 3–5 records; nothing is broken
+### The Stage 3–5 records are not where they should be; the same numbers are recovered
 
-The output showed `utility 0 rows` and a relearning check at canary only. Stages 3–5 uploaded
-their records alongside the checkpoints, to **forgetcheck-artifacts**, and that dataset was not
-attached. The proof is in the output: the loaded models include no `shadow` role, and only Stage
-4's training records carry it. `calibrate` now prints a record inventory (expected: 94 training
-shards = 10 M0 + 52 retrains + 32 shadows, and 240 unlearning shards). It also names the missing
-dataset, and the report names the conditions it could not compute.
+The output showed `utility 0 rows` and a relearning check at canary only. **Corrected:** I first
+put this down to forgetcheck-artifacts not being attached. It was attached, with a `results/`
+folder, and 1401 parquet files were mounted across the inputs. Yet the records directory held
+**0 of the 94 training shards** (10 M0 + 52 retrains + 32 shadows) and **16 of the 240 unlearning
+shards**. That fits the loaded models having no `shadow` role, since only Stage 4's training
+records carry it.
+
+Where the rest went is not yet known. This is the first stage to read the Stage 3–5 records at
+all; everything before read checkpoints, so the merged dataset's record layout was never
+exercised. `calibrate` now also reports any shard sitting outside the records directory.
+
+**Nothing is lost for Stage 7.** Stages 3 and 5 wrote each model's final test and forget
+accuracy twice, from one evaluation: as records, and into the checkpoint's metadata file. No
+checkpoint loads without its metadata, and Stage 6 loaded them all. `calibrate` now recovers the
+missing (model, metric) pairs from there; a real record always wins. A test checks that the
+recovered utility table and relearning check are identical to those built from records.
+
+The one thing metadata cannot supply is `runtime_s`, which exists only in the records. The open
+cross-account runtime item waits on finding the shards.
 
 ### 1. The 0.75 is exactly "every model that remembers, plus every destroyed model"
 
@@ -1960,14 +1973,44 @@ Every unlearned model already stands out on its starting accuracy: `canary_acc` 
 the retrains' 0.014. Relearning flags the same 30 models and **no others**, with r = 0.61. No
 non-destructive method hides the canary association; all show it in plain accuracy (method means
 0.108–0.186, 8–13× the retrains'). So the hidden-knowledge case relearning exists to catch does
-not occur at canary. The other seven conditions need the artifacts dataset.
+not occur at canary. The other seven conditions need the training-time forget accuracy, which is
+now recovered from checkpoint metadata.
+
+### 6. The effect table in standard deviations: one suspect metric, one display bug
+
+**`activation_l2` separates M0 from the retrains by 16–42 sd at every condition.** That
+includes mem-low (30.6 sd), where every other audit puts M0 within ~4 sd, CKA within 0.8, and
+every proportion metric within 2 points. A signal that ignores memorization level is not
+measuring the forget set.
+
+The prime suspect is the shared initialisation. `activation_l2` is the raw per-example L2 between
+two networks' activation vectors, neuron i against neuron i. That is only meaningful when the
+neurons correspond, and a shared initialisation is what makes them correspond. Every M0, and
+every unlearned model derived from it, has its twin among the five reference oracles. No retrain
+in the band ever does.
+
+CKA ignores neuron order, which is why the twin check found a small CKA effect (≤ 13% of the
+band). Raw L2 can feel the same twin far more strongly.
+
+If so, `activation_l2` flags every unlearned model at every condition regardless of forgetting.
+Two checks run next time:
+
+- the effect table is now **signed**; the twin explanation predicts M0 sits *closer* than a
+  retrain, i.e. negative;
+- `diagnose-twins` now also measures raw L2 (twin vs other oracles, against the band).
+
+**`relearn_t80` printed `inf` at six conditions.** Every retrain and every M0 reach 80% at step 0
+there, so the metric is constant: 0 ÷ 0, not infinitely separable. It was also not marked
+low-discriminability. Both are fixed and tested; a zero-width band with M0 on it is now NaN and
+marked.
 
 ### Open before Stage 8
 
-1. **One CPU run with forgetcheck-artifacts attached**: the setup cells, then Step 4. That run
-   gives the guarded balanced accuracy, the utility table that confirms the 5-point guard, and
-   the relearning check at all eight conditions.
-2. `runtime_s` is confounded with which account ran each seed: compare within an account.
+1. **One CPU run**: the setup cells, then Step 4. It gives the guarded balanced accuracy, the
+   utility table that confirms the 5-point guard, the relearning check at all eight conditions,
+   and where the Stage 3–5 shards actually are.
+2. `runtime_s` is confounded with which account ran each seed: compare within an account. It
+   exists only in the records, so it waits on finding the shards.
 
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 

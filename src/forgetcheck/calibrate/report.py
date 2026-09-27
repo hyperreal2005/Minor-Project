@@ -40,7 +40,8 @@ from .bands import (MIN_BAND_N, Band, clopper_pearson, coverage_for, flag, loo_f
                     prediction_band)
 from .native import native_flag, native_rule_for
 
-__all__ = ["CalibrationConfig", "calibrate", "load_audit_records", "write_tables"]
+__all__ = ["CalibrationConfig", "calibrate", "load_audit_records", "recover_training_metrics",
+           "write_tables"]
 
 #: Metrics that are verdicts, not measurements. A normal band over {0, 1} is meaningless; these
 #: are scored by their native rule only.
@@ -132,6 +133,59 @@ def load_audit_records(records_dir):
     key = ["run_id", "forget_id", "audit", "metric", "probe_set"]
     df = df.sort_values("timestamp").drop_duplicates(key, keep="last")
     return df.reset_index(drop=True)
+
+
+#: The training-time measurements the utility guard and the relearning check read.
+TRAINING_METRICS = (("test_acc", "test"), ("forget_acc", "forget"))
+
+
+def recover_training_metrics(df, store):
+    """Rows for training-time metrics that have no record, recovered from checkpoint metadata.
+
+    Stages 3 and 5 wrote each model's final test and forget accuracy twice, from one
+    evaluation: as `meta` records, and into the checkpoint's metadata file. With every dataset
+    attached, the first calibration to need them found 0 of the 94 training shards and 16 of
+    the 240 unlearning shards in the records directory -- while every metadata file was there,
+    because no checkpoint loads without one, and Stage 6 loaded them all. Only (model, metric)
+    pairs with no record are recovered, so a real record always wins. Base models need only
+    their test accuracy: a clean M0 has no forget set of its own. Returns ``(frame, n_models)``.
+    """
+    from ..data.forget_sets import spec_by_id
+    from ..registry import StoreError, make_record, parse_run_id, records_frame
+
+    meta_rows = df[df["audit"] == "meta"]
+    have = set(zip(meta_rows["run_id"], meta_rows["metric"]))
+    rows, models = [], set()
+    for rid in sorted(df.loc[df["audit"] != "meta", "run_id"].unique()):
+        key = parse_run_id(rid)
+        wanted = [(m, p) for m, p in TRAINING_METRICS if (rid, m) not in have
+                  and not (key.role == "base" and m == "forget_acc")]
+        if not wanted:
+            continue
+        try:
+            meta = store.load_meta(rid)
+        except StoreError:
+            continue
+        final = meta.final_metrics or {}
+        if key.role == "base":
+            fields = {"forget_id": key.forget, "forget_kind": "none", "forget_size": 0}
+        else:
+            fields = spec_by_id(key.forget).as_record_fields()
+        provenance = {"hparams": meta.hparams_sha, "checkpoint_sha": meta.sha,
+                      "notes": "recovered from checkpoint metadata"}
+        if meta.git_commit:
+            provenance["git_commit"] = meta.git_commit
+        if meta.saved_at:
+            provenance["timestamp"] = meta.saved_at
+        for metric, probe in wanted:
+            v = final.get(metric)
+            if not isinstance(v, (int, float)) or isinstance(v, bool) or v != v:
+                continue
+            n = int(fields["forget_size"]) if probe == "forget" else 10_000  # CIFAR-10 test set
+            rows.append(make_record(run_id=rid, audit="meta", metric=metric, probe_set=probe,
+                                    value=float(v), n_probe=n, **provenance, **fields))
+            models.add(rid)
+    return (records_frame(rows) if rows else df.iloc[0:0]), len(models)
 
 
 # --------------------------------------------------------------------------- helpers
@@ -232,8 +286,15 @@ def calibrate(df, *, registry, config: CalibrationConfig) -> dict:
                     [flag(float(v), band, direction) for v in m0["value"]])))
             if len(m0) and band.sd == band.sd and metric not in M0_SELF_REFERENCED | GUARDS:
                 gap = abs(float(m0["value"].mean()) - band.mean)
-                row["m0_gap_sd"] = gap / band.sd if band.sd > 0 else float("inf")
-                row["low_discriminability"] = bool(gap < config.low_discriminability_sd * band.sd)
+                # A zero-width band is a constant metric: every retrain gave the same value.
+                # If M0 gives it too, that is 0/0 -- nothing to discriminate -- not infinity.
+                # relearn_t80 at six conditions: every model reaches 80% at step 0.
+                if band.sd > 0:
+                    row["m0_gap_sd"] = gap / band.sd
+                else:
+                    row["m0_gap_sd"] = float("inf") if gap > 0 else float("nan")
+                row["low_discriminability"] = bool(
+                    gap < config.low_discriminability_sd * band.sd or gap == 0)
                 row["m0_gap_raw"] = float(m0["value"].mean()) - band.mean
                 if metric in PROPORTION_METRICS:
                     row["below_min_effect"] = bool(gap < config.min_effect)
@@ -350,7 +411,7 @@ def _relearning_vs_accuracy(df, damaged, config):
              & (df["probe_set"] == "forget") & df["role"].isin(["oracle", "unlearn"])]
     rows = []
     for cond, r in rel.groupby("forget_id", sort=True):
-        canary = str(r["forget_kind"].iloc[0]) == "canary"
+        canary = "forget_kind" in r and str(r["forget_kind"].iloc[0]) == "canary"
         metric, probe = ("canary_acc", "canary") if canary else ("forget_acc", "forget")
         s = df[(df["metric"] == metric) & (df["probe_set"] == probe)]
         start = s.drop_duplicates("run_id", keep="last").set_index("run_id")["value"].astype(float)

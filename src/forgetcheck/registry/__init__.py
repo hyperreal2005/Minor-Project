@@ -45,6 +45,7 @@ from .records import (
     RunRecord,
     make_record,
     read_records,
+    records_frame,
     shard_path,
     validate,
     write_records,
@@ -77,6 +78,7 @@ __all__ = [
     "validate",
     "write_records",
     "read_records",
+    "records_frame",
     "make_record",
     "shard_path",
     # store

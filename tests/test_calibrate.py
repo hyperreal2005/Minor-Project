@@ -246,3 +246,31 @@ class TestCalibrateEndToEnd:
 
     def test_bands_are_written_for_every_metric(self, tables):
         assert set(tables["bands"]["metric"]) == {"js_to_oracle", "mia_auc_pop"}
+
+
+def test_a_constant_metric_is_marked_not_infinitely_discriminating():
+    """relearn_t80 at six real conditions: every retrain and every M0 reach 80% at step 0. The
+    band has zero width and M0 sits on it -- 0/0, nothing to discriminate -- which printed as
+    'inf' standard deviations and was not marked low-discriminability. M0 *off* a zero-width
+    band is the opposite case and stays infinitely separable."""
+    from forgetcheck.registry.metrics import default_registry
+
+    rows = []
+
+    def add(rid, role, metric, value, seed):
+        rows.append(dict(run_id=rid, role=role, method="none", forget_id="rand-3000",
+                         audit="relearning", metric=metric, probe_set="forget", value=value,
+                         n_probe=500, train_seed=seed, timestamp="2026-09-25T00:00:00"))
+
+    for s in range(5):
+        orc, base = f"c10r18__oracle__rand-3000__none__train{s}", f"c10r18__base__full__none__train{s}"
+        add(orc, "oracle", "relearn_t80", 0.0, s)
+        add(base, "base", "relearn_t80", 0.0, s)
+        add(orc, "oracle", "relearn_auc", 0.9, s)
+        add(base, "base", "relearn_auc", 1.0, s)
+    v = calibrate(pd.DataFrame(rows), registry=default_registry(),
+                  config=CalibrationConfig())["validity"].set_index("metric")
+    assert math.isnan(v.loc["relearn_t80", "m0_gap_sd"])
+    assert v.loc["relearn_t80", "low_discriminability"]
+    assert math.isinf(v.loc["relearn_auc", "m0_gap_sd"])
+    assert not v.loc["relearn_auc", "low_discriminability"]

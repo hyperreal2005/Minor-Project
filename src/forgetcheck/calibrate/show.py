@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+
 __all__ = ["print_report"]
 
 
@@ -77,11 +79,17 @@ def print_report(out_dir="results/calibration") -> None:
                                        for r in marked.itertuples()), "\n")
 
     if "m0_gap_sd" in fwd:
-        _section("EFFECT SIZE, every metric -- M0's gap from the retrain mean, in retrain standard "
+        # Signed, because the direction is evidence: activation_l2 separates M0 from the
+        # retrains by 16-42 sd at every condition, mem-low included, where nothing else does.
+        # Negative there means M0 is *closer* to the oracle ensemble than a retrain is --
+        # the signature of M0's initialisation twin in the ensemble, not of the forget set.
+        sign = np.sign(fwd["m0_gap_raw"]) if "m0_gap_raw" in fwd else 1.0
+        _section("EFFECT SIZE, every metric -- M0 minus the retrain mean, in retrain standard "
                  "deviations",
-                 "(the registered safeguard marks a cell under 1 sd; divergences, distances, CKA "
-                 "and HSIC have only this scale)")
-        print(pivot(fwd, "m0_gap_sd", digits=1), "\n")
+                 "(|value| under 1: marked by the registered safeguard; negative: M0 below the "
+                 "retrains -- for a distance such as JS or L2, closer to the ensemble than a "
+                 "retrain is)")
+        print(pivot(fwd.assign(m0_gap_sd=sign * fwd["m0_gap_sd"]), "m0_gap_sd", digits=1), "\n")
 
     p = _read(out, "relearning_protocol")
     if len(p):

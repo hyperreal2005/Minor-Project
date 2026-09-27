@@ -476,3 +476,79 @@ def test_missing_stage3_to_5_records_are_named_not_left_as_zero_rows(
     assert "records: 0 training shards (stages 3-4), 0 unlearning shards" in out
     assert "attach the forgetcheck-artifacts dataset" in out
     assert "not computed for mem-high-3000" in out  # canary alone survives, as on Kaggle
+
+
+def test_training_metrics_are_recovered_from_checkpoint_metadata(
+    records_dir, tables, tmp_path, monkeypatch, capsys
+):
+    """The real merged datasets: every checkpoint's metadata file present, the Stage 3/5 record
+    shards absent (0 of 94 and 16 of 240 reached the records directory). Recovered from the
+    metadata -- the same evaluation, written at the same moment -- the utility guard and the
+    relearning check must come out exactly as they do from the records."""
+    import json
+    import shutil
+
+    import pandas as pd
+
+    from forgetcheck import cli
+    from forgetcheck.config import find_configs
+    from forgetcheck.registry import ArtifactStore, read_records
+
+    rec = tmp_path / "results" / "records"
+    rec.mkdir(parents=True)
+    for p in records_dir.glob("*.parquet"):
+        if not p.name.endswith(("--train.parquet", "--unlearn.parquet")):
+            shutil.copy2(p, rec / p.name)
+    store = ArtifactStore(tmp_path / "artifacts")
+    full = read_records(records_dir)
+    train = full[(full["audit"] == "meta") & full["metric"].isin(["test_acc", "forget_acc"])]
+    for rid, g in train.groupby("run_id"):
+        path = store.meta_path(rid)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "run_id": rid, "sha": "0" * 64, "hparams_sha": "h", "git_commit": "abc123",
+            "saved_at": "2026-09-01T00:00:00Z",
+            "final_metrics": {m: float(v) for m, v in zip(g["metric"], g["value"])},
+        }), encoding="utf-8")
+
+    class Ctx:
+        pass
+
+    ctx = Ctx()
+    ctx.records_dir, ctx.store, ctx.primary_condition = rec, store, PRIMARY
+    ctx.audits = yaml.safe_load((find_configs() / "audits.yaml").read_text(encoding="utf-8"))
+    monkeypatch.setattr(cli, "_ctx", lambda args: ctx)
+    assert cli.cmd_calibrate(cli.build_parser().parse_args(["calibrate"])) == 0
+    out = capsys.readouterr().out
+    assert "records: 0 training shards" in out
+    assert "recovered from checkpoint metadata for 302 models" in out
+    assert "training-time accuracy available for 302 of 302 audited models" in out
+
+    cal = tmp_path / "results" / "calibration"
+    key = ["forget_id", "run_id"]
+    got = pd.read_parquet(cal / "utility.parquet").sort_values(key).reset_index(drop=True)
+    want = tables["utility"].sort_values(key).reset_index(drop=True)
+    pd.testing.assert_frame_equal(got[key + ["drop_pp", "damaged"]],
+                                  want[key + ["drop_pp", "damaged"]], check_dtype=False)
+    pd.testing.assert_frame_equal(pd.read_parquet(cal / "relearning_vs_accuracy.parquet"),
+                                  tables["relearning_vs_accuracy"], check_dtype=False)
+
+
+def test_a_real_record_always_wins_over_metadata(records_dir, tmp_path):
+    """Recovery fills gaps only: a model with a record keeps it, whatever its metadata says."""
+    import json
+
+    from forgetcheck.calibrate import load_audit_records
+    from forgetcheck.calibrate.report import recover_training_metrics
+    from forgetcheck.registry import ArtifactStore
+
+    df = load_audit_records(records_dir)
+    store = ArtifactStore(tmp_path)
+    rid = "c10r18__unlearn__rand-500__salun__train0"
+    path = store.meta_path(rid)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"run_id": rid, "sha": "0" * 64,
+                                "final_metrics": {"test_acc": 0.123, "forget_acc": 0.456}}),
+                    encoding="utf-8")
+    extra, n = recover_training_metrics(df, store)
+    assert n == 0 and extra.empty

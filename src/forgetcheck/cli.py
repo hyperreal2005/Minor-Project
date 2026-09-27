@@ -446,22 +446,44 @@ def cmd_audit(args) -> int:
 
 def cmd_calibrate(args) -> int:
     """Stage 7: bands, validity rates and per-model verdicts from the audit records. CPU only."""
+    import pandas as pd
+
     from .calibrate import CalibrationConfig, calibrate, load_audit_records, write_tables
+    from .calibrate.report import recover_training_metrics
     from .registry.metrics import default_registry
 
     ctx = _ctx(args)
     df = load_audit_records(ctx.records_dir)
 
-    # Stages 3-5 uploaded their records together with the checkpoints, to forgetcheck-artifacts.
-    # The utility guard and the relearning check are built from them, so their absence is said
-    # loudly: the first run with only the Stage 6 dataset attached printed "utility 0 rows".
+    # The utility guard and the relearning check need each model's training-time test and
+    # forget accuracy. Stages 3-5 recorded them as shards AND in every checkpoint's metadata
+    # file; with all datasets attached the shards were mostly absent (0 of 94, 16 of 240), so
+    # what is missing is recovered from the metadata, and the inventory says which source held
+    # what -- including shards sitting where the reader does not look.
     n_train = len(list(ctx.records_dir.glob("*--train.parquet")))
     n_unlearn = len(list(ctx.records_dir.glob("*--unlearn.parquet")))
     print(f"records: {n_train} training shards (stages 3-4), {n_unlearn} unlearning shards "
-          f"(stage 5)")
-    if not n_train or not n_unlearn:
-        print("!! the utility guard and the relearning check need both: attach the "
-              "forgetcheck-artifacts dataset (stages 3-5) and re-run the setup cells\n")
+          f"(stage 5) in {ctx.records_dir}")
+    store = getattr(ctx, "store", None)
+    roots = [ctx.records_dir.parent] + ([store.root] if store is not None else [])
+    stray = sorted({p for root in roots if Path(root).is_dir()
+                    for pat in ("*--train.parquet", "*--unlearn.parquet")
+                    for p in Path(root).rglob(pat) if p.parent != ctx.records_dir})
+    if stray:
+        print(f"   {len(stray)} more sit elsewhere and are not read, e.g. {stray[0]}")
+    if store is not None:
+        extra, n = recover_training_metrics(df, store)
+        if n:
+            df = pd.concat([df, extra], ignore_index=True)
+            print(f"   test/forget accuracy recovered from checkpoint metadata for {n} models")
+    audited = set(df.loc[df["audit"] != "meta", "run_id"])
+    with_acc = audited & set(df.loc[df["metric"] == "test_acc", "run_id"])
+    print(f"   training-time accuracy available for {len(with_acc)} of {len(audited)} audited "
+          f"models")
+    if len(with_acc) < len(audited):
+        print(f"!! missing for {len(audited) - len(with_acc)}, e.g. "
+              f"{sorted(audited - with_acc)[0]}: attach the forgetcheck-artifacts dataset "
+              "(stages 3-5) and re-run the setup cells\n")
 
     tables = calibrate(df, registry=default_registry(), config=CalibrationConfig.from_context(ctx))
     out = ctx.records_dir.parent / "calibration"
@@ -512,7 +534,8 @@ def cmd_diagnose_twins(args) -> int:
     bands_path = ctx.records_dir.parent / "calibration" / "bands.parquet"
     if bands_path.is_file():
         bands = pd.read_parquet(bands_path)
-        key = {"js_forget": ("js_to_oracle", "forget"), "cka_layer4": ("cka_linear", "layer4")}
+        key = {"js_forget": ("js_to_oracle", "forget"), "cka_layer4": ("cka_linear", "layer4"),
+               "l2_layer4": ("activation_l2", "layer4")}
         half = {}
         for _, b in bands.iterrows():
             half[(b["forget_id"], b["metric"], b["probe_set"])] = (b["hi"] - b["lo"]) / 2

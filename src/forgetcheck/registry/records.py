@@ -43,6 +43,7 @@ __all__ = [
     "validate",
     "write_records",
     "read_records",
+    "records_frame",
     "shard_path",
     "RecordError",
 ]
@@ -400,6 +401,19 @@ def read_records(
 
     table = pa.concat_tables([pq.read_table(p, schema=SCHEMA) for p in paths])
     return table.to_pandas() if as_pandas else table
+
+
+def records_frame(rows: Sequence[RunRecord]):
+    """Validated rows as the DataFrame :func:`read_records` would return for them.
+
+    For rows assembled in memory rather than read from shards, so they concatenate with shard
+    rows under the one schema and pass the same checks a written row would.
+    """
+    reg = default_registry()
+    for r in rows:
+        validate(r, reg)
+    columns = {name: [getattr(r, name) for r in rows] for name in _FIELD_ORDER}
+    return pa.Table.from_pydict(columns, schema=SCHEMA).to_pandas()
 
 
 def make_record(

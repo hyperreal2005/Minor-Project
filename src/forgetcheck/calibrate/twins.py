@@ -41,6 +41,11 @@ def feature_cka(x: np.ndarray, y: np.ndarray) -> float:
     return num / den if den > 0 else float("nan")
 
 
+def _l2(a: np.ndarray, b: np.ndarray) -> float:
+    """Mean per-example L2 between two activation matrices -- the audits' `activation_l2`."""
+    return float(np.linalg.norm(np.asarray(a, np.float64) - np.asarray(b, np.float64), axis=1).mean())
+
+
 def _js(a: np.ndarray, b: np.ndarray) -> float:
     from ..audits.base import softmax
     from ..audits.behavioral import js_divergence
@@ -96,10 +101,15 @@ def twin_effect(
     if len(oracles) < 3:
         return []
 
-    pairs = {"js": {"twin": [], "other": [], "oo": []}, "cka": {"twin": [], "other": [], "oo": []}}
+    # Raw activation L2 as well as CKA. CKA is blind to how neurons are ordered; raw L2 compares
+    # neuron i with neuron i, which only means something when the two networks' neurons
+    # correspond -- as a shared initialisation can make them. So the twin can matter far more
+    # for L2 than for CKA, and the audits' activation_l2 is exactly this distance.
+    pairs = {k: {"twin": [], "other": [], "oo": []} for k in ("js", "cka", "l2")}
     for s, u in combinations(sorted(oracles), 2):
         pairs["js"]["oo"].append(_js(oracles[s][0], oracles[u][0]))
         pairs["cka"]["oo"].append(feature_cka(oracles[s][1], oracles[u][1]))
+        pairs["l2"]["oo"].append(_l2(oracles[s][1], oracles[u][1]))
 
     for m in methods:
         for s in seeds:
@@ -110,9 +120,10 @@ def twin_effect(
                 kind = "twin" if t == s else "other"
                 pairs["js"][kind].append(_js(got[0], o_logits))
                 pairs["cka"][kind].append(feature_cka(got[1], o_acts))
+                pairs["l2"][kind].append(_l2(got[1], o_acts))
 
     rows = []
-    for metric, closer_is in (("js", -1.0), ("cka", 1.0)):
+    for metric, closer_is in (("js", -1.0), ("cka", 1.0), ("l2", -1.0)):
         p = pairs[metric]
         if not p["twin"] or not p["other"] or len(p["oo"]) < 2:
             continue
@@ -121,7 +132,7 @@ def twin_effect(
         advantage = closer_is * (twin - other)  # > 0: the twin is closer
         rows.append({
             "forget_id": forget_id,
-            "metric": "js_forget" if metric == "js" else f"cka_{layer}",
+            "metric": {"js": "js_forget", "cka": f"cka_{layer}", "l2": f"l2_{layer}"}[metric],
             "n_twin_pairs": len(p["twin"]),
             "twin_mean": twin,
             "other_mean": other,
