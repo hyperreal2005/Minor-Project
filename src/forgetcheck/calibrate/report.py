@@ -253,8 +253,9 @@ def calibrate(df, *, registry, config: CalibrationConfig) -> dict:
         m0 = g[g["role"] == "base"]
         unlearned = g[g["role"] == "unlearn"]
 
+        retired = bool(registry[metric].retired)
         row = {"forget_id": cond, "audit": audit, "metric": metric, "probe_set": probe,
-               "direction": direction, "native_rule": rule}
+               "direction": direction, "native_rule": rule, "retired": retired}
         n_probe = int(g["n_probe"].iloc[0]) if len(g) else 0
 
         # ---- native rule: the audit as practitioners use it -----------------------------
@@ -336,6 +337,7 @@ def calibrate(df, *, registry, config: CalibrationConfig) -> dict:
                 "oracle_gap": abs(v - band.mean) / denom,
                 "utility_drop_pp": drop_pp.get(key, float("nan")),
                 "damaged": damaged.get(key),
+                "retired": retired,
             })
 
     canary, canary_validity = _canary(df, meas, registry, config, damaged)
@@ -435,7 +437,14 @@ def _relearning_vs_accuracy(df, damaged, config):
         # faster than a retrain is hidden knowledge; slower is damage or over-forgetting, which
         # relearning sees and accuracy does not -- but it is not what the audit claims to find.
         only = [a and not b for a, b in zip(by_auc, by_start)]
-        faster = sum(o and float(v) > b_auc.mean for o, v in zip(only, u_auc))
+        fast = [o and float(v) > b_auc.mean for o, v in zip(only, u_auc)]
+        faster = sum(fast)
+
+        def tally(sel):
+            from collections import Counter
+
+            c = Counter(m for s, m in zip(sel, u["method"]) if s)
+            return ", ".join(f"{m} {n}" for m, n in sorted(c.items()))
         rows.append({
             "forget_id": cond, "start_metric": metric,
             "n_retrain": len(o), "n_unlearned": len(u),
@@ -448,6 +457,8 @@ def _relearning_vs_accuracy(df, damaged, config):
             "flagged_by_relearn_only": sum(only),
             "relearn_only_faster": faster,
             "relearn_only_slower": sum(only) - faster,
+            "faster_methods": tally(fast),
+            "slower_methods": tally([o and not f for o, f in zip(only, fast)]),
         })
     return pd.DataFrame(rows)
 
@@ -584,6 +595,7 @@ def _canary(df, meas, registry, config, damaged=None):
             hurt = {rid for rid, *_ in items if damaged.get((cond, rid), False)}
             guarded = _confusion([(f and rid not in hurt, t, r) for rid, f, t, r in items])
             rows.append({"audit": audit, "metric": metric, "probe_set": probe, "kind": kind,
+                         "retired": bool(registry[metric].retired),
                          **_confusion([(f, t, r) for _, f, t, r in items]),
                          "n_damaged": len(hurt),
                          "fp_other_guarded": guarded["fp_other"],

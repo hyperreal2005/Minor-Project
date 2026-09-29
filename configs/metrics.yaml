@@ -170,6 +170,14 @@ representation:
     oracle_ref: true
     probe_sets: [layer1, layer2, layer3, layer4, penultimate]
     doc: Mean L2 distance between GAP-pooled activations, model vs oracle.
+    # RETIRED 27 Sep 2026 on the team's go-ahead. Evidence: STATUS.md, Stage 7 fifth read §3.
+    retired: >
+      Measures the shared initialisation, not forgetting. Raw L2 compares neuron i with neuron
+      i, which only means something when neurons correspond -- as a shared initialisation makes
+      them. Every M0-descended model has its init twin among the five reference oracles; the
+      twin is 26-39 retrain-sd closer and moves the score by 3.5-6.4 band half-widths, enough
+      alone to flag every such model at every condition (M0 reads as closer than a retrain,
+      -16 to -42 sd, where CKA reads it as less similar).
 
 reversibility:
   relearn_auc:

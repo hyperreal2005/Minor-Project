@@ -2095,8 +2095,11 @@ on neuron order.
 - **Where relearning does add flags** (mem-low 8, rand-500 4), the unlearned models relearn
   *less* than the retrains on average. So those flags are most likely damage or over-forgetting,
   not hidden knowledge; the report now splits relearning-only flags into faster and slower.
+  **Wrong — see the sixth read.** 11 of the 12 are *faster*. The condition means were pulled
+  down by other models, and the per-model direction is what counts.
 
-As configured, the reversibility audit has found no hidden knowledge in this study.
+~~As configured, the reversibility audit has found no hidden knowledge in this study.~~
+Superseded by the sixth read.
 
 ### 5. SDE's statistic is inverted at mem-high too
 
@@ -2110,12 +2113,64 @@ The three mem-high paired-oracle caches in the Stage 6 dataset raise EOFError: t
 from the earlier upload problem. They are caches only, so no record is affected and the runner
 recomputes them if ever needed. The seven measured conditions agree.
 
+## STAGE 7, sixth read — relearning, corrected; `activation_l2` retired (27 Sep 2026)
+
+### Relearning finds what it claims to, where it can, and only at sub-threshold size
+
+The split of relearning-only flags: **mem-low 7 faster / 1 slower; rand-500 4 faster / 0
+slower.** "Faster" means relearning beyond every retrain from a retrain-like start, which is the
+hidden-knowledge signature. My fifth-read guess (damage) came from condition means, and it was
+wrong.
+
+The reading that follows from the counts:
+
+- **At 6 of 8 conditions there is nothing hidden to find.** Every unlearned model already fails
+  on plain forget accuracy (25 of 25). Relearning flags the same models, so it adds nothing
+  there, but that reflects the methods (none hides what it retains), not a blind audit.
+- **Where models *look* forgotten, relearning catches most of them.** Models inside the retrain
+  band on forget accuracy number 5 at rand-500 and 17 at mem-low. Relearning flags **4 of the 5**
+  at rand-500, all faster than every retrain, and 8 of the 17 at mem-low (7 faster).
+- **The size is small, and both cells are marked.** A faster model cannot pass M0, which sits at
+  1.000 in both. So each flag is bounded by M0's own relearning advantage: **1.8 points** at
+  rand-500 and **0.2** at mem-low. The 2-point rule, adopted before this result, marks both
+  cells, so they are not scored.
+  - mem-low's flags live inside a 0.2-point range, a handful of the 3000 examples, and are
+    ceiling noise in practical terms.
+  - rand-500's are the credible ones. The whole forget set is reintroduced there, so the curve
+    measures recovery of exactly the examples forgotten. Four of five apparently forgotten
+    models recover faster than any retrain.
+
+**For the paper:** relearning is the only audit that can see forgetting hidden from accuracy. In
+this study it sees it only where accuracy is near its ceiling, which leaves it little room. The
+protocol explains why. It reintroduces 500 of up to 5000 examples but evaluates all of them, and
+its log-step AUC includes step 0, i.e. the starting accuracy. `relearn_t80` is anchored to 80% of
+M0's start, which retrains already exceed. A headroom-normalised gain, (relearn − start) /
+(1 − start), computable from the records now held, would size the rand-500 effect on a fair
+scale: a Stage 8 item. Which methods the flags fall on is printed from the next `calibrate` run.
+
+### `activation_l2` retired from verdicts (team go-ahead)
+
+Retired in the registry (`retired:` in `metrics.yaml`, which now must state a reason). Its
+records still validate, and every calibration table carries a `retired` column so Stage 8 can
+filter on it. The printed report leaves it out and says why.
+
+The canary's clean result becomes **18 audits at 1.00**; the 19th was layer4 activation L2, which
+scored 1.00 by detecting descent from M0.
+
+### The Stage 3–5 records
+
+They are not in the dataset *versions* attached now: no training shard anywhere under the merged
+`results/` or `artifacts/`. Kaggle keeps every dataset version, so an earlier version of
+forgetcheck-artifacts (or of the per-account datasets) most likely holds them.
+
+Only `runtime_s` depends on that, since everything else came back from checkpoint metadata. If
+the timings are wanted: attach that older version and check with
+`find /kaggle/input -name '*--train.parquet' | wc -l`.
+
 ### Open before Stage 8
 
-1. **Team: retire `activation_l2` from verdicts?** (§3).
-2. **One CPU run** (Step 4 only) for the faster/slower split of the relearning-only flags.
-3. `runtime_s` is confounded with which account ran each seed. It exists only in records, and
-   those are on the per-account datasets if anywhere.
+1. Which methods the relearning-only flags fall on (next `calibrate` run, no extra step).
+2. `runtime_s`: only from an older dataset version, only if the timings are wanted.
 
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 

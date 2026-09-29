@@ -555,3 +555,36 @@ def test_a_real_record_always_wins_over_metadata(records_dir, tmp_path):
                     encoding="utf-8")
     extra, n = recover_training_metrics(df, store)
     assert n == 0 and extra.empty
+
+
+class TestRetiredMetric:
+    def test_every_table_marks_activation_l2_and_only_it(self, tables):
+        for name in ("validity", "flags", "canary_validity"):
+            t = tables[name]
+            assert set(t.loc[t["retired"].astype(bool), "metric"]) == {"activation_l2"}, name
+
+    def test_the_report_leaves_it_out_and_says_why(self, records_dir, monkeypatch, capsys):
+        from forgetcheck import cli
+        from forgetcheck.config import find_configs
+
+        class Ctx:
+            pass
+
+        ctx = Ctx()
+        ctx.records_dir, ctx.primary_condition = records_dir, PRIMARY
+        ctx.audits = yaml.safe_load((find_configs() / "audits.yaml").read_text(encoding="utf-8"))
+        monkeypatch.setattr(cli, "_ctx", lambda args: ctx)
+        assert cli.cmd_calibrate(cli.build_parser().parse_args(["calibrate"])) == 0
+        out = capsys.readouterr().out
+        assert "RETIRED from verdicts: activation_l2 -- Measures the shared initialisation" in out
+        after = out.split("RETIRED from verdicts", 1)[1].split("\n", 1)[1]  # past its own line
+        assert "activation_l2" not in after
+
+
+def test_relearning_only_flags_name_their_methods(tables):
+    r = tables["relearning_vs_accuracy"].set_index("forget_id")
+    fast = r.loc[PRIMARY, "faster_methods"]
+    counts = {m: int(n) for m, n in (part.rsplit(" ", 1) for part in fast.split(", "))}
+    assert sum(counts.values()) == r.loc[PRIMARY, "relearn_only_faster"]
+    assert "neggrad" not in counts  # the destroyed control is guarded out
+    assert r.loc[PRIMARY, "slower_methods"] == ""

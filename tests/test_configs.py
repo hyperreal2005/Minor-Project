@@ -115,3 +115,24 @@ class TestAgreement:
 
 def test_shadow_count_matches_the_rmia_reference_count(base, audits):
     assert base["shadows"]["count"] == audits["privacy"]["rmia"]["n_references"]
+
+
+class TestRetiredMetrics:
+    def test_activation_l2_is_retired_with_its_reason_and_nothing_else_is(self):
+        reg = default_registry()
+        assert "shared initialisation" in reg["activation_l2"].retired
+        # Its records must still validate: retired is not unregistered.
+        assert reg["activation_l2"].accepts_probe_set("layer4")
+        assert [n for n in ("cka_linear", "cka_rbf", "js_to_oracle", "relearn_auc")
+                if reg[n].retired] == []
+
+    def test_retiring_without_a_reason_is_refused(self):
+        from forgetcheck.registry.metrics import _parse
+
+        body = {"family": "representation", "direction": "closer_to_oracle",
+                "oracle_ref": True, "probe_sets": ["layer4"]}
+        with pytest.raises(ValueError, match="must state why"):
+            _parse({"representation": {"m": {**body, "retired": ""}}}, None)
+        with pytest.raises(ValueError, match="must state why"):
+            _parse({"representation": {"m": {**body, "retired": True}}}, None)
+        assert _parse({"representation": {"m": body}}, None)["m"].retired == ""

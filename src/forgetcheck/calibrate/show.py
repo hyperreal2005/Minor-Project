@@ -42,6 +42,17 @@ def print_report(out_dir="results/calibration") -> None:
     if v.empty:
         print(f"no validity table under {out}; run `forgetcheck calibrate` first")
         return
+    # Retired metrics stay in the parquet tables -- their failure is documented there -- but
+    # yield no verdicts, so the printed tables leave them out and say which and why.
+    retired = sorted(set(v.loc[v["retired"].astype(bool), "metric"])) if "retired" in v else []
+    if retired:
+        from ..registry.metrics import default_registry
+
+        reg = default_registry()
+        for m in retired:
+            print(f"RETIRED from verdicts: {m} -- {reg[m].retired}")
+        print()
+        v = v[~v["metric"].isin(retired)]
     fwd = v[v["probe_set"].isin(["forget", "layer4"])]
     nat = fwd[fwd["native_rule"].notna()] if "native_rule" in fwd else fwd.iloc[0:0]
 
@@ -103,7 +114,14 @@ def print_report(out_dir="results/calibration") -> None:
              "(flagged_by_relearn_only = 0: relearning adds nothing to plain accuracy at that "
              "condition; damaged models excluded)")
     if len(rv):
-        print(rv.round(3).to_string(index=False), "\n")
+        names = [c for c in ("faster_methods", "slower_methods") if c in rv]
+        print(rv.drop(columns=names).round(3).to_string(index=False), "\n")
+        for r in rv.itertuples():
+            if names and (r.faster_methods or r.slower_methods):
+                print(f"  {r.forget_id}: relearning-only, faster than every retrain -- "
+                      f"{r.faster_methods or 'none'}; slower -- {r.slower_methods or 'none'}")
+        if names:
+            print()
     missing = sorted(set(v["forget_id"]) - set(rv["forget_id"] if len(rv) else ()))
     if missing:
         print(f"not computed for {', '.join(missing)}: their starting accuracies are Stage 3/5 "
@@ -134,6 +152,8 @@ def print_report(out_dir="results/calibration") -> None:
         print(c.groupby(["role", "method"])[cols].mean(numeric_only=False).round(3), "\n")
 
     cv = _read(out, "canary_validity")
+    if len(cv) and "retired" in cv:
+        cv = cv[~cv["retired"].astype(bool)]
     if len(cv):
         _section("CANARY VALIDITY -- each audit's verdicts against the ground truth",
                  "(fp_retrain: retrains flagged -- the audit is invalid; fp_other: models with no "

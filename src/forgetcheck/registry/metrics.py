@@ -60,6 +60,10 @@ class MetricSpec:
     oracle_ref: bool
     probe_sets: tuple[str, ...]
     doc: str = ""
+    #: Why the metric no longer yields verdicts, or "" if it does. A retired metric stays
+    #: registered -- its records must still validate, and its failure is itself a result --
+    #: but the calibration marks it and Stage 8 leaves it out of every verdict-based analysis.
+    retired: str = ""
 
     @property
     def is_ranked(self) -> bool:
@@ -185,6 +189,13 @@ def _parse(raw: dict, source: Path | None) -> MetricRegistry:
                     "genuinely applies everywhere."
                 )
 
+            retired = body.get("retired", "")
+            if not isinstance(retired, str) or (("retired" in body) and not retired.strip()):
+                raise ValueError(
+                    f"metrics.yaml: metric {name!r} has retired={retired!r}; retiring a metric "
+                    "must state why, as a non-empty string"
+                )
+
             specs[name] = MetricSpec(
                 name=name,
                 family=family,
@@ -192,6 +203,7 @@ def _parse(raw: dict, source: Path | None) -> MetricRegistry:
                 oracle_ref=oracle_ref,
                 probe_sets=probe_sets,
                 doc=(body.get("doc") or "").strip(),
+                retired=" ".join(retired.split()),
             )
 
     if not specs:
