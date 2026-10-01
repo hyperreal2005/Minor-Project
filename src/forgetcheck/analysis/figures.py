@@ -385,18 +385,24 @@ def fig_matrix(matrix, registry, out: Path) -> list[Path]:
     return _save(fig, out, "fig6_matrix")
 
 
-def fig_h3(flags, h3, out: Path) -> list[Path]:
-    """H3: per condition, each model's representation-to-M0 G against its relearning G."""
+def fig_h3(flags, h3, out: Path, *, validity=None, bands=None, controlled=None) -> list[Path]:
+    """H3: per condition, each model's representation-to-M0 against its relearning, both on
+    the signed scale -- 0 at a retrain, 1 at M0, negative = farther from M0 than a retrain."""
     import matplotlib.pyplot as plt
 
-    if flags is None or h3 is None or not len(h3):
+    from .agreement import KEYS, signed_gaps
+
+    if flags is None or h3 is None or not len(h3) or validity is None or bands is None:
         return []
     f = flags[~flags["damaged"].fillna(False).astype(bool)]
-    rep = f[(f["metric"] == "cka_to_original") & (f["probe_set"] == "layer4")]
-    rel = f[(f["metric"] == "relearn_auc") & (f["probe_set"] == "forget")]
-    key = ["run_id", "forget_id"]
-    d = rep[key + ["oracle_gap"]].merge(rel[key + ["oracle_gap"]], on=key,
-                                        suffixes=("_rep", "_rel")).dropna()
+    f = f[f["probe_set"].isin(["forget", "layer4"])]
+    idx = f.set_index(KEYS).index.unique()
+    S = signed_gaps(f, validity, bands, idx)
+    if "cka_to_original" not in S or "relearn_auc" not in S:
+        return []
+    d = (S[["cka_to_original", "relearn_auc"]].dropna()
+         .rename(columns={"cka_to_original": "oracle_gap_rep", "relearn_auc": "oracle_gap_rel"})
+         .reset_index())
     conds = [c for c in COND_ORDER if c in set(d["forget_id"])]
     if not conds:
         return []
@@ -407,23 +413,31 @@ def fig_h3(flags, h3, out: Path) -> list[Path]:
     for ax, c in zip(axes, conds):
         part = d[d["forget_id"] == c]
         ax.grid(zorder=0)
+        for x in (0, 1):  # a retrain's level, and M0's
+            ax.axvline(x, color=AXIS, linewidth=0.8, zorder=1)
         ax.plot(part["oracle_gap_rep"], part["oracle_gap_rel"], "o", markersize=3.6,
                 color=BLUE, markeredgecolor="white", markeredgewidth=0.8, zorder=3)
         stat = ""
         if c in per.index and "tau" in per and per.loc[c, "tau"] == per.loc[c, "tau"]:
             r = per.loc[c]
-            stat = f"\n\u03c4 {r['tau']:+.2f} [{r['tau_lo']:+.2f}, {r['tau_hi']:+.2f}]"
+            stat = f"\n\u03c4 {r['tau']:+.2f}\n[{r['tau_lo']:.2f}, {r['tau_hi']:.2f}]"
         # The statistic rides in the panel title, never on top of the points.
-        ax.set_title(COND_LABEL[c] + stat, color=INK, pad=3, fontsize=7, linespacing=1.4)
+        ax.set_title(COND_LABEL[c] + stat, color=INK, pad=3, fontsize=6.8, linespacing=1.3)
         ax.tick_params(labelsize=6.5)
-    axes[0].set_ylabel("relearning G")
-    fig.supxlabel("representation-to-M0 G (0 = a retrain's similarity to M0, 1 = M0)",
+    axes[0].set_ylabel("relearning (signed G)")
+    fig.supxlabel("representation to M0 (signed G: 0 = a retrain's similarity to M0, 1 = M0)",
                   fontsize=7, color=INK_2, y=-0.08)
     w = per.loc["within"] if "within" in per.index else None
-    within = (f"within-condition tau {w['tau']:+.2f}" if w is not None and "tau" in w
-              and w["tau"] == w["tau"] else "")
-    _title(fig, "H3: do models whose representations stay closer to M0 relearn more like M0?",
-           f"Each point is a healthy unlearned model; H3 predicts a rising cloud. {within}.")
+    parts = []
+    if w is not None and "tau" in w and w["tau"] == w["tau"]:
+        parts.append(f"within-condition \u03c4 {w['tau']:+.2f}")
+    if controlled is not None and len(controlled):
+        c = controlled.iloc[0]
+        parts.append(f"slope controlling for method and condition {c['slope']:+.2f} "
+                     f"[{c['slope_lo']:+.2f}, {c['slope_hi']:+.2f}]")
+    _title(fig, "Models whose representations stay closer to M0 relearn more like M0 (H3)",
+           "Each point is a healthy unlearned model; vertical lines mark a retrain (0) and M0 "
+           "(1). " + "; ".join(parts) + ".")
     return _save(fig, out, "fig7_h3")
 
 
@@ -454,5 +468,6 @@ def make_figures(analysis_dir, calibration_dir, out_dir) -> list[Path]:
     if summary is not None:
         paths += fig_beyond_m0(summary, out)
     paths += fig_matrix(read(an, "correlation_matrix"), reg, out)
-    paths += fig_h3(read(cal, "flags"), read(an, "h3"), out)
+    paths += fig_h3(read(cal, "flags"), read(an, "h3"), out, validity=validity,
+                    bands=read(cal, "bands"), controlled=read(an, "h3_controlled"))
     return paths

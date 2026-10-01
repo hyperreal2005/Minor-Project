@@ -285,6 +285,11 @@ def calibrate(df, *, registry, config: CalibrationConfig) -> dict:
             if metric not in M0_SELF_REFERENCED | GUARDS:
                 row.update(_with_ci("m0_tpr", *_rate(
                     [flag(float(v), band, direction) for v in m0["value"]])))
+            elif metric in M0_SELF_REFERENCED and len(m0):
+                # No power and no discriminability test -- M0's value is fixed by construction --
+                # but its gap is still the anchor of the signed scale: 1 = M0, 0 = a retrain,
+                # negative = farther from M0 than a retrain is. H3 needs exactly that sign.
+                row["m0_gap_raw"] = float(m0["value"].mean()) - band.mean
             if len(m0) and band.sd == band.sd and metric not in M0_SELF_REFERENCED | GUARDS:
                 gap = abs(float(m0["value"].mean()) - band.mean)
                 # A zero-width band is a constant metric: every retrain gave the same value.

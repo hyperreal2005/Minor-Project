@@ -14,7 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .agreement import (H3_METRICS, H3_PAIRS, PRIMARY, AnalysisConfig,
-                        agreement_by_condition, canary_continuous,
+                        agreement_by_condition, canary_continuous, h3_controlled,
                         correlation_matrix, correlations, difficulty_spread, disagreement,
                         instance_tables, method_summary, patterns, privacy_contrast, rank_tables,
                         rq4_by_method, signed_gaps)
@@ -40,8 +40,12 @@ def analyse(cal_dir, config: AnalysisConfig | None = None) -> dict:
 
     summary = method_summary(flags, G, V, S)
     corr = correlations(G, config)
-    h3 = (correlations(G, config, pairs=H3_PAIRS, metrics={**PRIMARY, **H3_METRICS}, salt=100)
-          if all(m in G for m in H3_METRICS.values()) else pd.DataFrame())
+    have_h3 = S is not None and all(m in S for m in H3_METRICS.values())
+    h3_metrics = {**PRIMARY, **H3_METRICS}
+    h3 = (correlations(S, config, pairs=H3_PAIRS, metrics=h3_metrics, salt=100)
+          if have_h3 else pd.DataFrame())
+    h3_abs = (correlations(G, config, pairs=H3_PAIRS, metrics=h3_metrics, salt=100)
+              if have_h3 else pd.DataFrame())
     mixed = [fit_main(G, PRIMARY[f]) for f in PRIMARY if PRIMARY[f] in G]
     inter = [interaction_test(G, PRIMARY[f]) for f in PRIMARY if PRIMARY[f] in G]
     retired = sorted(set(flags.loc[flags["retired"].astype(bool), "metric"])) \
@@ -58,6 +62,8 @@ def analyse(cal_dir, config: AnalysisConfig | None = None) -> dict:
         "method_summary": summary,
         "correlations": corr,
         "h3": h3,
+        "h3_absolute": h3_abs,
+        "h3_controlled": h3_controlled(S) if have_h3 else pd.DataFrame(),
         "correlation_matrix": correlation_matrix(G),
         "agreement_by_condition": agreement_by_condition(corr),
         "disagreement": disagreement(V),
@@ -182,12 +188,28 @@ def print_report(t: dict) -> None:
     h3 = t.get("h3")
     if h3 is not None and len(h3):
         _h("H3 -- do models whose representations stay closer to M0 relearn more like M0?",
-           "(G of cka_to_original -- the share of the way from a retrain's similarity to M0 up to "
-           "M0 itself -- against relearning G. H3 predicts tau > 0)")
+           "(SIGNED scale, the primary test: cka_to_original from a retrain's similarity to M0 (0) "
+           "up to M0 (1), negative = farther from M0",
+           " than a retrain; against signed relearning G. H3 predicts tau > 0. The absolute-G "
+           "version, a sensitivity check, is beside it)")
         h = h3.copy()
         h["tau [95% CI]"] = [_ci(a, lo, hi) for a, lo, hi in
                              zip(h.get("tau"), h.get("tau_lo"), h.get("tau_hi"))]
-        print(h[["scope", "n", "tau [95% CI]"]].to_string(index=False), "\n")
+        ha = t.get("h3_absolute")
+        if ha is not None and len(ha):
+            h = h.merge(ha[["scope", "tau"]].rename(columns={"tau": "tau |G|"}), on="scope",
+                        how="left")
+        cols = [k for k in ("scope", "n", "tau [95% CI]", "tau |G|") if k in h]
+        print(h[cols].round(2).to_string(index=False), "\n")
+        hc = t.get("h3_controlled")
+        if hc is not None and len(hc):
+            r = hc.iloc[0]
+            print(f"beyond method identity: across the 5 seeds of each method x condition, mean "
+                  f"tau {r['cell_mean_tau']:+.2f} ({int(r['cells_positive'])}/{int(r['cells'])} "
+                  f"cells positive);")
+            print(f"relearning ~ representation-to-M0 + method + condition + (1 | seed): slope "
+                  f"{r['slope']:+.3f} [{r['slope_lo']:+.3f}, {r['slope_hi']:+.3f}], "
+                  f"p={r['slope_p']:.2g}\n")
 
     # ------------------------------------------------------------------ H2b
     pc = t["privacy_contrast"]

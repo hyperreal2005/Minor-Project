@@ -683,3 +683,43 @@ def test_figures_render_from_what_analyse_writes(tables, tmp_path):
                      "fig4_agreement_by_condition", "fig5_beyond_m0", "fig6_matrix", "fig7_h3"}
     assert all(p.stat().st_size > 5000 for p in paths)
     assert {p.suffix for p in paths} == {".pdf", ".png"}
+
+
+def test_m0_referenced_metrics_carry_m0s_gap_for_the_signed_scale(tables):
+    """H3 is directional, so it needs the sign: calibrate records M0's gap even for metrics
+    whose M0 value is fixed by construction (1 for cka_to_original, 0 for js_to_original)."""
+    v = tables["validity"].set_index(["forget_id", "metric", "probe_set"])
+    b = tables["bands"].set_index(["forget_id", "metric", "probe_set"])
+    key = ("rand-3000", "cka_to_original", "layer4")
+    assert v.loc[key, "m0_gap_raw"] == pytest.approx(1.0 - b.loc[key, "mean"])
+    assert np.isnan(v.loc[key, "m0_tpr"])  # still no power reported
+
+
+def test_h3_runs_signed_with_the_absolute_version_beside_it(tables, tmp_path):
+    from forgetcheck.analysis import AnalysisConfig, analyse
+    from forgetcheck.calibrate import write_tables
+
+    write_tables(tables, tmp_path)
+    t = analyse(tmp_path, AnalysisConfig(resamples=50))
+    assert {"pooled", "within"} <= set(t["h3"]["scope"]) <= set(t["h3_absolute"]["scope"])
+    hc = t["h3_controlled"].iloc[0]
+    # relearn_auc is marked at mem-low in this fixture (its ceiling), so 7 conditions x 25 models
+    assert hc["n"] == 7 * (len(METHODS) - 1) * len(SEEDS) and hc["cells"] == 7 * 5
+    assert np.isfinite([hc["slope"], hc["slope_lo"], hc["slope_hi"]]).all()
+
+
+def test_a_new_metric_does_not_move_other_metrics_canary_intervals(tables, tmp_path):
+    """Intervals are seeded by metric name: adding cka_to_original once shifted the others."""
+    import pandas as pd
+
+    from forgetcheck.analysis.agreement import (AnalysisConfig, canary_continuous,
+                                                instance_tables)
+
+    G, _, _ = instance_tables(tables["flags"], tables["validity"])
+    cfg = AnalysisConfig(resamples=200)
+    full = canary_continuous(G, tables["canary"], cfg).set_index("metric")
+    fewer = canary_continuous(G.drop(columns=["cka_to_original"]), tables["canary"],
+                              cfg).set_index("metric")
+    common = fewer.index
+    pd.testing.assert_frame_equal(full.loc[common, ["tau_lo", "tau_hi"]],
+                                  fewer.loc[common, ["tau_lo", "tau_hi"]])

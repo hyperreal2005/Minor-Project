@@ -38,7 +38,7 @@ __all__ = [
     "AnalysisConfig", "PRIMARY", "REGISTERED_PAIRS", "instance_tables", "kendall_tau_b",
     "correlations", "correlation_matrix", "disagreement", "patterns", "privacy_contrast",
     "method_summary", "rank_tables", "difficulty_spread", "signed_gaps", "canary_continuous",
-    "rq4_by_method", "agreement_by_condition", "H3_METRICS", "H3_PAIRS",
+    "rq4_by_method", "agreement_by_condition", "H3_METRICS", "H3_PAIRS", "h3_controlled",
 ]
 
 #: One metric per audit family for the registered comparisons, fixed before any Stage 8 result.
@@ -68,6 +68,12 @@ REGISTERED_PAIRS = (
 #: original may exhibit faster relearning". G cannot test it -- it measures distance from the
 #: retrains, not proximity to M0 -- so it gets the representation-to-M0 measure, against the
 #: reversibility primary. H3 predicts a positive tau.
+#:
+#: **On the signed scale.** H3 is directional: *closer to M0*. The registered G is an absolute
+#: value, so a model farther from M0 than a retrain (signed < 0) scores like one closer to it --
+#: and on the real run that was 47% of NegGrad+ and 50% of SalUn models. Signed is the primary
+#: test; the absolute version is kept beside it as a sensitivity check. (Within a condition the
+#: signed scale is a monotone rescaling of the raw CKA, so it equals ranking the raw values.)
 H3_METRICS = {"representation_to_original": "cka_to_original"}
 H3_PAIRS = (("representation_to_original", "reversibility"),)
 
@@ -480,6 +486,34 @@ def agreement_by_condition(corr) -> "pd.DataFrame":
     return pd.DataFrame(rows)
 
 
+def h3_controlled(S) -> "pd.DataFrame":
+    """H3 beyond method identity. Within a condition the 25 models are 5 methods x 5 seeds, so a
+    correlation could just be "these methods are high on both". Two checks that cannot be:
+    the mean tau over the 5 seeds of each (method, condition) cell, and the slope of relearning
+    on representation-to-M0 with method and condition as fixed effects and seed as random."""
+    import pandas as pd
+
+    from .mixed_effects import _fit
+
+    rep, rel = H3_METRICS["representation_to_original"], PRIMARY["reversibility"]
+    if rep not in S or rel not in S:
+        return pd.DataFrame()
+    d = S[[rep, rel]].dropna().rename(columns={rep: "rep", rel: "rel"}).reset_index()
+    cells = [kendall_tau_b(g["rep"].to_numpy(), g["rel"].to_numpy())
+             for _, g in d.groupby(["method", "forget_id"]) if len(g) >= 4]
+    cells = np.array([c for c in cells if c == c])
+    d["train_seed"] = d["train_seed"].astype(int).astype(str)
+    res, _, optimizer = _fit("rel ~ rep + C(method) + C(forget_id)", d, reml=True)
+    ci = res.conf_int().loc["rep"]
+    return pd.DataFrame([{
+        "n": int(len(d)), "cells": int(len(cells)),
+        "cell_mean_tau": float(cells.mean()) if len(cells) else float("nan"),
+        "cells_positive": int((cells > 0).sum()),
+        "slope": float(res.fe_params["rep"]), "slope_lo": float(ci[0]),
+        "slope_hi": float(ci[1]), "slope_p": float(res.pvalues["rep"]), "optimizer": optimizer,
+    }])
+
+
 def canary_continuous(G, canary, config: AnalysisConfig | None = None) -> "pd.DataFrame":
     """RQ6 by degree, not verdict: does each audit's G order the canary models by how much of
     the canary association they actually kept?
@@ -511,8 +545,12 @@ def canary_continuous(G, canary, config: AnalysisConfig | None = None) -> "pd.Da
             row = {"metric": metric, "n": int(ok.sum()), "tau": float(r.statistic),
                    "p": float(r.pvalue)}
             if config is not None:
+                # Seeded by the metric's name, not its position: adding a metric must not
+                # move every other metric's interval (it did, in the second decimal).
+                import zlib
+
                 row.update({k: v for k, v in _bootstrap(
-                    x, y, config, salt=500 + sorted(gc.columns).index(metric)).items()
+                    x, y, config, salt=500 + zlib.crc32(metric.encode()) % 100_000).items()
                     if k.startswith("tau")})
             rows.append(row)
     return pd.DataFrame(rows).sort_values("tau", ascending=False, ignore_index=True)

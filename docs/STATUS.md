@@ -20,7 +20,7 @@ genuinely unresolved — as opposed to merely unwritten.
 | 5 — Full-pipeline pilot | all | **COMPLETE** | ✅ 240/240 from final implementations; cross-account consistency verified |
 | 6 — Audits | B, C | **COMPLETE** | ✅ 240/240, all six audits, every re-run landed; 9,238 rows |
 | 7 — Calibration & validity | D | **COMPLETE** | ✅ Every audit has a retrain FPR and a canary accuracy; guard, effect floor, twin check; `activation_l2` retired |
-| 8 — Analysis | D | **RUN — RESULTS IN** | Reproduced exactly off-Kaggle; one team decision open (H3) and the figures |
+| 8 — Analysis | D | **COMPLETE — final run pending** | RQ1–RQ6, H1–H5 answered; 7 figures; reproduced exactly off-Kaggle |
 
 > **Two different stage numberings are in play.** The table above is the *plan's build*
 > stages. `forgetcheck queue --stage N` uses *queue* stages, which are not the same: queue 3 =
@@ -2426,11 +2426,99 @@ The calibrated false-positive rate is quoted on the primary probes:
 
 The first read's 16/595 and 11/284 included the since-retired `activation_l2`.
 
+## H3 RESULT (1 Oct 2026) — supported, and not by method identity
+
+Notebook 06 ran with Step 0.
+
+- **Reproducibility:** all 15 analysis tables in the bundle were reproduced exactly here.
+- **Records:** 320 `original-sim` shards (240 unlearned, 40 paired retrains, 40 M0 anchors), 4
+  layers each. Every M0 anchor is exactly 1.000.
+
+### The measurement behaves as it should
+
+**Retrains against their own M0** (layer4 CKA): canary 0.79, mem-high 0.86, mem-med 0.92, random
+0.93–0.94, mem-low 0.95. A retrain drifts further from M0 the more memorized the forget set,
+which is the expected order. The bands are tight (sd 0.001–0.006), and no retrain is falsely
+flagged (0/5 at every condition).
+
+**Unlearned models (median):**
+
+| method | similarity to M0 |
+|---|---|
+| fine-tune | 0.94–0.98 |
+| SCRUB | 0.92–1.00 |
+| l1sparse | 0.86–0.96 |
+| SalUn | 0.90–0.96 |
+| NegGrad+ | 0.73–0.98 |
+| destroyed `neggrad` (excluded) | 0.03–0.15 |
+
+**By layer**, unlearned models stay closest to M0 early (layer1 0.99) and diverge late
+(layer4 0.95).
+
+**Farther from M0 than a retrain is:** 20–50% of models per condition, and per method 47% of
+NegGrad+ and 50% of SalUn.
+
+**Canary validity by degree:** `cka_to_original` tracks memory at **+0.55 [0.24, 0.77]**, second
+only to `js_to_original`. The two M0-referenced measures track memory best.
+
+### Signed, not absolute — decided on the hypothesis's definition, reported both ways
+
+H3 is directional: "closer to M0". The registered G is an absolute value, so it scores a model
+*farther* from M0 than a retrain the same as one *closer* to it, and that describes half the
+SalUn and NegGrad+ models.
+
+- **The primary test is signed:** 0 at a retrain, 1 at M0, negative beyond the retrain. Within a
+  condition this equals ranking the raw CKA.
+- **The absolute version** is printed beside it as a sensitivity check.
+
+Calibration now records M0's gap for M0-referenced metrics too: their value is fixed by
+construction, but the sign needs the anchor. *For this local run* that value was filled into
+`validity` exactly as the fixed `calibrate` computes it: M0's mean (1.000 in every anchor record)
+minus the band mean, with a test pinning the equality. The next Kaggle run produces it itself.
+
+### Results
+
+| | τ (signed) [95% CI] | τ (absolute G) |
+|---|---|---|
+| **within-condition** | **+0.64** | +0.52 |
+| pooled | +0.44 [0.35, 0.53] | +0.34 |
+| canary | +0.64 [0.41, 0.81] | +0.64 |
+| mem-high | +0.79 [0.63, 0.90] | +0.69 |
+| mem-med | +0.71 [0.56, 0.83] | +0.33 |
+| rand-2500 | +0.44 [0.10, 0.69] | +0.45 |
+| rand-3000 | +0.48 [0.19, 0.71] | +0.43 |
+| rand-5000 | +0.79 [0.64, 0.91] | +0.60 |
+
+(Relearning is marked at mem-low and rand-500, so H3 is tested at the six other conditions.)
+
+**Beyond method identity.** The 25 models of a condition are 5 methods × 5 seeds, so the
+correlation could be "these methods are high on both". It is not only that:
+
+- **Across the 5 seeds** within each method × condition: mean τ +0.30, positive in 22 of 30
+  cells.
+- **Within each method**, across conditions: positive for all five (+0.18 to +0.43).
+- **Controlling for method and condition** (seed random): slope **+0.49 [0.42, 0.57]**,
+  p ≈ 10⁻³⁶. A model whose representation sits at M0 rather than at a retrain's level relearns
+  about half-way toward M0, whichever method produced it.
+
+**Verdict: H3 is supported.** Representations that stay closer to the original predict faster,
+more M0-like relearning, at every condition where relearning is measurable. The other end shows
+it too: at mem-med, the models pushed *farther* from M0 than a retrain also relearn *slower* than
+one. This settles the earlier "suggestive" reading, which rested on CKA to the retrains (τ −0.34),
+a measure of distance from retrains, not proximity to M0.
+
+Figure 7 is redrawn on the signed scale, with vertical lines at a retrain and at M0.
+
+**Reproducibility fix:** canary-validity intervals are now seeded by metric *name*. Seeding by
+list position meant adding a metric shifted every other interval in the second decimal. A test
+pins it.
+
 ### Open
 
-1. **Run notebook 06** (GPU, for Step 0), then download the bundle. It now also carries the
-   figures and H3's records.
-2. Read H3 and write it up.
+1. **One final run of notebook 06**, so the bundle the paper cites comes from the pipeline end to
+   end (the signed anchor now computed by `calibrate`). It is CPU only if Step 4's push was done
+   last time; otherwise Step 0 recomputes on GPU, which is resumable.
+2. Figure sizes for the paper template, once the venue is known.
 
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 
