@@ -896,7 +896,12 @@ with zipfile.ZipFile(bundle, "w", zipfile.ZIP_DEFLATED) as z:
     for sub in ("calibration", "analysis"):
         for p in sorted((REPO_DIR / "results" / sub).glob("*.parquet")):
             z.write(p, f"results/{sub}/{p.name}")
+    for p in sorted((REPO_DIR / "results" / "figures").glob("fig*.*")):
+        z.write(p, f"results/figures/{p.name}")
     z.write("calibrate_report.txt", "results/calibrate_report.txt")
+    # H3's raw records too: small, and the only place they exist until the dataset is pushed.
+    for p in sorted((REPO_DIR / "results" / "records").glob("*--original-sim*.parquet")):
+        z.write(p, f"results/records/{p.name}")
 print(f"{bundle}  ({bundle.stat().st_size / 1e6:.1f} MB)")
 """
 
@@ -908,24 +913,41 @@ def nb_analyse() -> dict:
         "normalized oracle gap, pass/fail disagreement, the patterns the hypotheses name, and "
         "the confirmatory mixed models -- all from Stage 7's calibration tables, so every number "
         "traces to a record.\n\n"
-        "**Attach** `forgetcheck-artifacts` and `forgetcheck-stage6`. **CPU only**: set "
-        "Accelerator to None. A few minutes end to end.\n"
+        "**Attach** `forgetcheck-cifar10`, `forgetcheck-artifacts` and `forgetcheck-stage6`. "
+        "**Accelerator: GPU (T4)** for step 0, which evaluates the 10 original models; everything "
+        "after it is CPU. Step 0 is resumable: if the session dies, re-run from the top and "
+        "finished models are skipped.\n"
+    )
+    config = (
+        'DEVICE = "cuda" if __import__("torch").cuda.is_available() else "cpu"\n'
+        'print(f"device {DEVICE}")\n'
     )
     return notebook([
         md(header),
         code(INSTALL),
         code(SETUP_AUDIT),
+        code(config),
+        md("## Step 0 - H3: how close is each model's representation to its own original?\n\n"
+           "Linear CKA between every model and the M0 of its seed, per layer. The models' "
+           "activations come from the Stage 6 cache; M0's are computed here (5 per condition). "
+           "Each line should say `4 layers`; the destroyed `neggrad` models may say fewer -- a "
+           "constant representation has no CKA."),
+        code("!{CLI} --root . --device {DEVICE} original-similarity\n"),
         md("## Step 1 - calibrate\n\nRebuilds Stage 7's tables from the records (about a "
            "minute). Its full report was read in Stage 7; only the lines Stage 8 needs are "
            "shown, and the whole report is kept in the download."),
         code("!{CLI} --root . calibrate > calibrate_report.txt\n"
              "!grep -E 'records:|recovered|available for|relearning-only' calibrate_report.txt\n"),
-        md("## Step 2 - analyse"),
-        code("!{CLI} --root . analyse\n"),
+        md("## Step 2 - analyse, and the figures"),
+        code("!{CLI} --root . analyse\n!{CLI} --root . figures\n"),
         md("## Step 3 - one file to download\n\nIn the right-hand panel, under **Output** "
            "(`/kaggle/working`), open the menu next to `forgetcheck_stage8_results.zip` and "
            "download it. It holds only result tables (a few MB)."),
         code(BUNDLE_STAGE8),
+        md("## Step 4 (optional) - push the new records\n\nSaves step 0's records to "
+           "`forgetcheck-stage6`, so later sessions skip it. The zip above already holds them; "
+           "this only makes them durable on Kaggle."),
+        code(PUSH_AUDIT.replace('stage 6 account K', 'stage 8 H3')),
     ])
 
 

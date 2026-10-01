@@ -1,8 +1,18 @@
 """Stage 8 confirmatory tests (master reference §16.2).
 
-``G ~ method + forget_condition + (1 | train_seed)``, one model per primary metric, on the
-normalized oracle gap. The random intercept is the seed: the five unlearned models of a method at
-a condition share their M0, so they are repeated measures, not independent draws.
+``log G ~ method + forget_condition + (1 | train_seed)``, one model per primary metric. The
+random intercept is the seed: the five unlearned models of a method at a condition share their
+M0, so they are repeated measures, not independent draws.
+
+**Why log G** (decided on the first real run, 1 Oct 2026, before reading any coefficient as a
+result). G divides each model's distance from the retrains by M0's. Where M0 is separable but
+only just -- JS at mem-low, CKA at the random sets -- that denominator is minute, G reaches
+30-150, and a model on raw G is a model of those few values: the first fit gave js_to_oracle an
+intercept of -2.3 with an interval of +/-7. On the log scale the denominator becomes an additive
+constant per (condition, metric), which the condition term absorbs exactly, so the method
+coefficients are free of it: each is the ratio of a method's distance from the retrains to fine-
+tune's, ``exp(coef)``, at every condition alike. The condition coefficients, in turn, carry the
+denominator and are not read as difficulty effects.
 
 The reference levels are chosen so the coefficients answer the design's two axes directly.
 Method: fine-tune, the simplest baseline. Condition: ``rand-3000``, so the three ``mem-*-3000``
@@ -27,7 +37,10 @@ CONDITION_REF = "rand-3000"
 
 
 def _frame(G, metric, conditions=None):
-    d = G[metric].dropna().rename("G").reset_index()
+    import numpy as np
+
+    g = G[metric]
+    d = np.log(g.where(g > 0)).dropna().rename("G").reset_index()  # column "G" holds log G
     if conditions is not None:
         d = d[d["forget_id"].isin(conditions)]
     d["train_seed"] = d["train_seed"].astype(int).astype(str)
@@ -96,7 +109,8 @@ def fit_main(G, metric) -> "pd.DataFrame":
     ci = res.conf_int()
     rows = []
     for name in res.fe_params.index:
-        rows.append({"metric": metric, "term": _term(name), "coef": float(res.fe_params[name]),
+        rows.append({"metric": metric, "scale": "log G", "term": _term(name),
+                     "coef": float(res.fe_params[name]),
                      "lo": float(ci.loc[name, 0]), "hi": float(ci.loc[name, 1]),
                      "p": float(res.pvalues[name]), "n": int(len(d)),
                      "seed_var": float(res.cov_re.iloc[0, 0]),

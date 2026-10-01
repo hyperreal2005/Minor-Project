@@ -520,6 +520,29 @@ def cmd_analyse(args) -> int:
     return 0
 
 
+def cmd_figures(args) -> int:
+    """Stage 8's figures from the calibration and analysis tables. CPU only."""
+    from .analysis.figures import make_figures
+
+    ctx = _ctx(args)
+    res = ctx.records_dir.parent
+    if not (res / "analysis" / "correlations.parquet").is_file():
+        print("no analysis tables; run `forgetcheck analyse` first")
+        return 1
+    for p in make_figures(res / "analysis", res / "calibration", res / "figures"):
+        print(f"  {p}")
+    return 0
+
+
+def cmd_original_similarity(args) -> int:
+    """H3: CKA between every model and its own M0, per layer. GPU helps; CPU works."""
+    from .audits.runner import original_similarity
+
+    ctx = _ctx(args)
+    return original_similarity(ctx, device=args.device, batch_size=args.batch_size,
+                               force=args.force, forget=args.forget)
+
+
 def cmd_diagnose_twins(args) -> int:
     """Does a shared initialisation make models look retrain-like? Cached outputs only, no GPU.
 
@@ -709,6 +732,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     an = sub.add_parser("analyse", help="stage 8: agreement, disagreement, mixed models (CPU)")
     an.set_defaults(func=cmd_analyse)
+
+    fg = sub.add_parser("figures", help="stage 8: the figures, from the analysis tables (CPU)")
+    fg.set_defaults(func=cmd_figures)
+
+    osim = sub.add_parser("original-similarity",
+                          help="H3: CKA between every model and its own M0 (resumable)")
+    osim.add_argument("--forget", default=None, help="one condition only")
+    osim.add_argument("--batch-size", type=int, default=512)
+    osim.add_argument("--force", action="store_true", help="recompute models already measured")
+    osim.set_defaults(func=cmd_original_similarity)
 
     tw = sub.add_parser("diagnose-twins",
                         help="does a shared initialisation make models look retrain-like? (CPU)")

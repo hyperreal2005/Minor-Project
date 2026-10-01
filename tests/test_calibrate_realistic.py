@@ -111,6 +111,18 @@ def _relearn(rows):
     return next(r.value for r in rows if r.metric == "relearn_auc")
 
 
+H3_RNG = np.random.default_rng(99)  # its own stream: adding H3 leaves every other value as it was
+
+
+def _h3_rows(rid, cond, centre):
+    """`original-similarity`'s records: CKA to the model's own M0, per layer."""
+    fields = spec_by_id(cond).as_record_fields()
+    return [make_record(run_id=rid, audit="representation", metric="cka_to_original",
+                        probe_set=layer, value=float(min(1.0, centre + H3_RNG.normal(scale=0.01)))
+                        if centre < 1 else 1.0, n_probe=60, **fields)
+            for layer in ("layer1", "layer2", "layer3", "layer4")]
+
+
 def _relearn_norm_undefined(cond, role):
     if cond in ("rand-500", "mem-low-3000"):
         return True                      # anchor gap below min_anchor_gap for every model
@@ -162,6 +174,7 @@ def records_dir(tmp_path_factory):
                 rid = f"c10r18__unlearn__{cond}__{m}__train{s}"
                 rows = _model_rows(rid, "unlearn", cond, rng, ts=early, method=m)
                 write_records(rows, rec, suffix="audit")
+                write_records(_h3_rows(rid, cond, 0.95), rec, suffix="original-sim")
                 write_records(_meta_rows(rid, "unlearn", cond, rng, relearn=_relearn(rows),
                                          method=m), rec, suffix="unlearn")
         for s in SEEDS:
@@ -173,6 +186,8 @@ def records_dir(tmp_path_factory):
                           suffix="train")
             write_records(_model_rows(base, "base", cond, rng, ts=late), rec,
                           suffix=f"audit-sim-{cond}")
+            write_records(_h3_rows(orc, cond, 0.90), rec, suffix="original-sim")
+            write_records(_h3_rows(base, cond, 1.0), rec, suffix=f"original-sim-{cond}")
             if spec.kind == "canary":
                 write_records(_meta_rows(base, "base", cond, rng, relearn=None), rec,
                               suffix="train")
@@ -616,6 +631,9 @@ def test_analyse_runs_on_what_calibrate_writes(records_dir, monkeypatch, capsys)
     inv = pd.read_parquet(an / "inventory.parquet").iloc[0]
     assert "neggrad" not in inv["methods"].split(", ") and inv["retired"] == "activation_l2"
     assert inv["instances"] == len(CONDITIONS) * (len(METHODS) - 1) * len(SEEDS)
+    h3 = pd.read_parquet(an / "h3.parquet")
+    assert {"pooled", "within"} <= set(h3["scope"])
+    assert set(h3["metric_a"]) == {"cka_to_original"}
     corr = pd.read_parquet(an / "correlations.parquet")
     assert set(corr.loc[corr["scope"] == "pooled", "pair"]) == {
         "behavior vs privacy_weak", "behavior vs privacy_strong", "behavior vs representation",
@@ -626,7 +644,7 @@ def test_analyse_runs_on_what_calibrate_writes(records_dir, monkeypatch, capsys)
 def test_no_confirmatory_interval_is_a_degenerate_fit(tables, tmp_path):
     """On this exact data statsmodels' default optimizer reported cka_linear's intercept as
     0.000 [-800539, +800539] with a log-likelihood of +inf -- printed as a result. Every
-    interval must be finite and of a size G can have."""
+    interval must be finite and of a size log G can have."""
     import numpy as np
 
     from forgetcheck.analysis import AnalysisConfig, analyse
@@ -635,5 +653,33 @@ def test_no_confirmatory_interval_is_a_degenerate_fit(tables, tmp_path):
     write_tables(tables, tmp_path)
     me = analyse(tmp_path, AnalysisConfig(resamples=50))["mixed_effects"]
     assert len(me) and np.isfinite(me[["coef", "lo", "hi"]].to_numpy()).all()
-    assert ((me["hi"] - me["lo"]) < 1.0).all()
+    assert ((me["hi"] - me["lo"]) < 10.0).all()  # the degenerate fit was ~1.6e6 wide
     assert set(me["optimizer"]) <= {"lbfgs", "powell", "nm"}
+
+
+def test_h3_metric_is_calibrated_like_js_to_original(tables):
+    """M0's similarity to itself is 1 by construction: no power is reported for it, and its G
+    runs from the retrains' similarity to M0 (0) up to M0 itself (1)."""
+    v = tables["validity"]
+    h3 = v[v["metric"] == "cka_to_original"]
+    assert len(h3) == len(CONDITIONS) * 4 and h3["m0_tpr"].isna().all()
+    f = tables["flags"]
+    g = f.loc[(f["metric"] == "cka_to_original") & (f["probe_set"] == "layer4"), "oracle_gap"]
+    assert g.notna().all() and g.between(0, 1.5).mean() > 0.9  # 0.95 sits half-way to 1
+
+
+def test_figures_render_from_what_analyse_writes(tables, tmp_path):
+    """Every figure draws from the real table shapes, H3 included, and lands as PDF and PNG."""
+    from forgetcheck.analysis import AnalysisConfig, analyse, write_tables
+    from forgetcheck.analysis.figures import make_figures
+    from forgetcheck.calibrate import write_tables as write_calibration
+
+    cal, an = tmp_path / "calibration", tmp_path / "analysis"
+    write_calibration(tables, cal)
+    write_tables(analyse(cal, AnalysisConfig(resamples=50)), an)
+    paths = make_figures(an, cal, tmp_path / "figures")
+    names = {p.stem for p in paths}
+    assert names == {"fig1_native_validity", "fig2_canary_degree", "fig3_method_ratios",
+                     "fig4_agreement_by_condition", "fig5_beyond_m0", "fig6_matrix", "fig7_h3"}
+    assert all(p.stat().st_size > 5000 for p in paths)
+    assert {p.suffix for p in paths} == {".pdf", ".png"}

@@ -722,6 +722,103 @@ def _config_for(name: str, audits_cfg: dict) -> dict:
     return cfg
 
 
+def original_similarity(
+    ctxobj,
+    *,
+    device: str = "cpu",
+    batch_size: int = 512,
+    force: bool = False,
+    forget: str | None = None,
+) -> int:
+    """H3's measurement: linear CKA between each model and its own original M0, per layer.
+
+    Every unlearned model (and every paired retrain, for the band) is compared with the M0 of
+    its train seed on the condition's mixed probe; M0 is compared with itself, which gives the
+    anchor of 1 the calibration's G needs. The models' activations come from the Stage 6 cache
+    -- recomputed from the checkpoint if a cache file is missing or bad -- and M0's are computed
+    here, five forward passes per condition: it serves seven conditions under one run_id, so it
+    was never cached. Records go to their own shards, ``<run_id>--original-sim[-<condition>]``,
+    which no audit's resume check reads. Resumable: models already done are skipped.
+    """
+    from ..calibrate.twins import feature_cka
+    from ..registry.records import shard_path
+    from ..unlearn import base_run_id_for
+
+    train = {int(s) for s in ctxobj.seeds["train"]}
+    targets = [t for t in available_targets(ctxobj.store, role="unlearn", forget=forget)]
+    targets += [t for t in available_targets(ctxobj.store, role="oracle", forget=forget)
+                if t.seed in train]  # paired retrains; the ensemble pairs with no M0
+    targets += base_targets(ctxobj, forget=forget)
+
+    def suffix(t):
+        return f"original-sim-{t.forget_id}" if t.role == "base" else "original-sim"
+
+    by_condition: dict[str, list[AuditTarget]] = {}
+    for t in targets:
+        if force or not shard_path(ctxobj.records_dir, t.run_id, suffix=suffix(t)).is_file():
+            by_condition.setdefault(t.forget_id, []).append(t)
+    done_count = len(targets) - sum(len(v) for v in by_condition.values())
+    print(f"{len(targets)} models, {done_count} already measured")
+
+    layers = ctxobj.audits["representation"]["layers"]
+    written = failed = undefined = 0
+    for cond in sorted(by_condition):
+        group = by_condition[cond]
+        spec = ctxobj.spec(cond)
+        probes = build_probes(
+            forget_indices=ctxobj.forget_indices(cond), n_train=ctxobj.bundle.n_train,
+            n_test=ctxobj.bundle.n_test, forget_id=cond,
+            config=ctxobj.audits.get("representation", {}),
+        )
+        cache = _ConditionCache(ctxobj, forget_id=cond, probes=probes, layers=layers,
+                                device=device, batch_size=batch_size)
+        originals: dict[int, ModelOutputs | None] = {}
+        print(f"\n{cond}: {len(group)} models", flush=True)
+        for t in group:
+            t0 = time.perf_counter()
+            try:
+                if t.seed not in originals:
+                    originals[t.seed] = cache._eval(base_run_id_for(spec, t.seed),
+                                                    with_activations=True)
+                m0 = originals[t.seed]
+                acts0 = m0.activations if m0 is not None else None
+                if t.role == "base":
+                    out = m0  # M0 against itself: the anchor, already in hand
+                else:
+                    out = None if m0 is None else cache._eval(t.run_id, with_activations=True,
+                                                              cache=True)
+                if acts0 is None or out is None:
+                    raise RuntimeError("checkpoint missing from this store")
+                meta = ctxobj.store.load_meta(t.run_id)
+                common = dict(run_id=t.run_id, **spec.as_record_fields(),
+                              hparams=meta.hparams_sha, checkpoint_sha=meta.sha,
+                              audit_seed=int(ctxobj.seeds.get("audit", 0)))
+                common["forget_size"] = int(probes.forget.size)
+                rows = []
+                for layer in layers:
+                    a, b = out.activations.get(layer), acts0.get(layer)
+                    v = (feature_cka(a, b) if a is not None and b is not None
+                         and np.isfinite(a).all() and np.isfinite(b).all() else float("nan"))
+                    if not np.isfinite(v):
+                        undefined += 1  # a constant (destroyed) representation: CKA undefined
+                        continue
+                    rows.append(make_record(
+                        audit="representation", metric="cka_to_original", probe_set=layer,
+                        value=float(v), n_probe=int(len(a)),
+                        notes="H3: linear CKA to the model's own M0", **common))
+                if rows:
+                    write_records(rows, ctxobj.records_dir, suffix=suffix(t))
+                    written += len(rows)
+                print(f"  {t.run_id}: {len(rows)} layers in {time.perf_counter() - t0:.1f}s",
+                      flush=True)
+            except Exception as exc:  # one bad model must not lose the condition
+                failed += 1
+                print(f"  {t.run_id}: FAILED: {type(exc).__name__}: {exc}", flush=True)
+    note = f", {undefined} layer(s) undefined (constant activations)" if undefined else ""
+    print(f"\nwrote {written} records, {failed} models failed{note}")
+    return 1 if failed else 0
+
+
 def _n_probe(probe: str, probes: ProbeSpec, outputs: ModelOutputs) -> int:
     if probe in ("forget", "retain", "test"):
         return int(getattr(probes, probe).size)

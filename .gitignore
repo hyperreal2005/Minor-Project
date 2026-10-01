@@ -44,6 +44,7 @@ results/figures/*
 results/calibration/*
 results/analysis/*
 results/calibrate_report.txt
+results/analyse_report.txt
 forgetcheck_stage8_results.zip
 !results/**/.gitkeep
 

@@ -386,3 +386,35 @@ def test_an_overflowed_cache_is_recomputed_not_served(tmp_path, capsys):
     redo = redo[(redo["run_id"] == target) & (redo["audit"] == "representation")]
     assert sorted(redo["metric"]) == sorted(live["metric"])
     assert redo["value"].astype(float).notna().sum() == live["value"].astype(float).notna().sum()
+
+
+def test_original_similarity_measures_every_model_against_its_own_m0(tmp_path, capsys):
+    """H3's measurement through the real runner and real checkpoints. M0 against itself is the
+    anchor (exactly 1); the paired retrain is M0's weights in this fixture (1); the unlearned
+    model is made a different network (below 1). A second run skips what is done."""
+    import torch
+
+    from forgetcheck.audits.runner import original_similarity
+    from forgetcheck.models.resnet import make_resnet18
+    from forgetcheck.registry import read_records
+
+    ctx = _Ctx(tmp_path)
+    target = _seed_store(ctx)
+    torch.manual_seed(1)
+    ctx.store.save_checkpoint(target, make_resnet18(num_classes=K).state_dict(), train_seed=0,
+                              hparams_sha="e2e")
+
+    assert original_similarity(ctx, device="cpu", batch_size=64) == 0
+    out = capsys.readouterr().out
+    assert "3 models, 0 already measured" in out and "0 models failed" in out
+    sim = read_records(ctx.records_dir)
+    sim = sim[sim["metric"] == "cka_to_original"]
+    assert set(sim["role"]) == {"unlearn", "oracle", "base"}
+    assert (sim.groupby("run_id").size() == 4).all()          # four layers each
+    np.testing.assert_allclose(sim.loc[sim["role"] == "base", "value"], 1.0, atol=1e-9)
+    assert (sim.loc[sim["role"] == "oracle", "value"] > 0.999).all()
+    mine = sim.loc[sim["run_id"] == target, "value"]
+    assert ((mine > 0) & (mine < 0.999)).all()
+
+    assert original_similarity(ctx, device="cpu", batch_size=64) == 0
+    assert "3 models, 3 already measured" in capsys.readouterr().out

@@ -17,6 +17,14 @@ higher at one condition than another, the pooled correlation picks up the differ
 conditions, not agreement between audits on the same models. So each correlation is also
 computed per condition and as the n-weighted mean of those (`within`); where pooled exceeds
 within, the excess is the conditions talking, not the audits.
+
+**G above 1, and G's tail.** G > 1 is a result, by the plan's own definition: the method moved
+the model *farther* from a retrain than the original model was. Its magnitude, though, is set by
+the denominator. Where M0 is statistically separable from the retrains but only just -- JS at
+mem-low (0.0002), CKA at the random sets (0.002-0.007) -- G reaches 30 to 150. So magnitudes are
+summarised by medians and by the share beyond M0 (G > 1), never by means; rank statistics are
+untouched by it; and the confirmatory models are fitted on log G, where the denominator is a
+per-condition constant that the condition term absorbs exactly (`mixed_effects`).
 """
 
 from __future__ import annotations
@@ -29,7 +37,8 @@ import numpy as np
 __all__ = [
     "AnalysisConfig", "PRIMARY", "REGISTERED_PAIRS", "instance_tables", "kendall_tau_b",
     "correlations", "correlation_matrix", "disagreement", "patterns", "privacy_contrast",
-    "method_summary", "rank_tables", "difficulty_spread",
+    "method_summary", "rank_tables", "difficulty_spread", "signed_gaps", "canary_continuous",
+    "rq4_by_method", "agreement_by_condition", "H3_METRICS", "H3_PAIRS",
 ]
 
 #: One metric per audit family for the registered comparisons, fixed before any Stage 8 result.
@@ -54,6 +63,13 @@ REGISTERED_PAIRS = (
     ("representation", "reversibility"),
     ("privacy_weak", "privacy_strong"),
 )
+
+#: H3, added with its metric on 1 Oct 2026: "models retaining representations closer to the
+#: original may exhibit faster relearning". G cannot test it -- it measures distance from the
+#: retrains, not proximity to M0 -- so it gets the representation-to-M0 measure, against the
+#: reversibility primary. H3 predicts a positive tau.
+H3_METRICS = {"representation_to_original": "cka_to_original"}
+H3_PAIRS = (("representation_to_original", "reversibility"),)
 
 #: Each metric enters on one probe: the forget set, or layer4 for representation.
 PROBES = ("forget", "layer4")
@@ -169,14 +185,17 @@ def _pair(G, a: str, b: str):
     return G.loc[m, a].to_numpy(), G.loc[m, b].to_numpy(), G[m]
 
 
-def correlations(G, config: AnalysisConfig, pairs=REGISTERED_PAIRS) -> "pd.DataFrame":
+def correlations(G, config: AnalysisConfig, pairs=REGISTERED_PAIRS, metrics=None,
+                 salt: int = 0) -> "pd.DataFrame":
     """The registered comparisons (§15.2): tau-b and Spearman with bootstrap intervals, pooled
-    and per condition, plus the n-weighted within-condition mean."""
+    and per condition, plus the n-weighted within-condition mean. ``metrics`` maps the labels
+    in ``pairs`` to metric names (default: the family primaries)."""
     import pandas as pd
 
+    metrics = metrics or PRIMARY
     rows = []
-    for k, (fa, fb) in enumerate(pairs):
-        a, b = PRIMARY[fa], PRIMARY[fb]
+    for k, (fa, fb) in enumerate(pairs, start=salt):
+        a, b = metrics[fa], metrics[fb]
         x, y, sub = _pair(G, a, b)
         per = []
         conds = sorted(sub.index.get_level_values("forget_id").unique())
@@ -206,15 +225,23 @@ def correlations(G, config: AnalysisConfig, pairs=REGISTERED_PAIRS) -> "pd.DataF
 
 
 def correlation_matrix(G) -> "pd.DataFrame":
-    """Every analysed metric against every other, pooled tau-b with its n. Descriptive: the
-    registered comparisons are the primary pairs above; this is the full picture around them."""
+    """Every analysed metric against every other: pooled tau-b, and the n-weighted mean of the
+    per-condition values (``tau_within``), with n. Descriptive: the registered comparisons are
+    the primary pairs above; this is the full picture around them."""
     import pandas as pd
 
     rows = []
     for a, b in combinations(sorted(G.columns), 2):
-        x, y, _ = _pair(G, a, b)
+        x, y, sub = _pair(G, a, b)
+        conds = sub.index.get_level_values("forget_id")
+        per = [(int((conds == c).sum()), kendall_tau_b(x[conds == c], y[conds == c]))
+               for c in sorted(set(conds)) if (conds == c).sum() >= 5]
+        per = [(n, t) for n, t in per if t == t]
         rows.append({"metric_a": a, "metric_b": b, "n": int(len(x)),
-                     "tau": kendall_tau_b(x, y) if len(x) >= 5 else float("nan")})
+                     "tau": kendall_tau_b(x, y) if len(x) >= 5 else float("nan"),
+                     "tau_within": (float(np.average([t for _, t in per],
+                                                     weights=[n for n, _ in per]))
+                                    if per else float("nan"))})
     return pd.DataFrame(rows)
 
 
@@ -279,8 +306,30 @@ def patterns(G, V) -> "pd.DataFrame":
             clean = ok & (v[beh] == False) & (v[pw] == False) & (v[ps] == False)  # noqa: E712
             row["rq4_pass_behaviour_and_privacy"] = int(clean.sum())
             row["rq4_of_which_flagged_by_relearning"] = int((clean & (v[rel] == True)).sum())
+        if ps in g and rel in g:
+            # The verdict form above is empty whenever behaviour flags everything. On G: the
+            # strong privacy attack calls the model retrain-like, relearning calls it M0-like.
+            both = g[ps].notna() & g[rel].notna()
+            private = both & (g[ps] < 0.5)
+            row["rq4g_rmia_retrain_like"] = int(private.sum())
+            row["rq4g_of_which_relearning_M0_like"] = int((private & (g[rel] > 0.5)).sum())
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+def rq4_by_method(G) -> "pd.DataFrame":
+    """RQ4 on G, by method and condition: models the strong privacy attack calls retrain-like
+    (G < 0.5) that relearning calls M0-like (G > 0.5)."""
+    import pandas as pd
+
+    ps, rel = PRIMARY["privacy_strong"], PRIMARY["reversibility"]
+    if ps not in G or rel not in G:
+        return pd.DataFrame()
+    g = G[[ps, rel]].dropna()
+    private = g[ps] < 0.5
+    hit = private & (g[rel] > 0.5)
+    out = pd.DataFrame({"rmia_retrain_like": private, "relearning_M0_like": hit})
+    return (out.groupby(level=["forget_id", "method"]).sum().astype(int).reset_index())
 
 
 def privacy_contrast(G, V, config: AnalysisConfig) -> "pd.DataFrame":
@@ -292,7 +341,7 @@ def privacy_contrast(G, V, config: AnalysisConfig) -> "pd.DataFrame":
     calibrated flag rate on the same instances.
     """
     import pandas as pd
-    from scipy.stats import wilcoxon
+    from scipy.stats import binomtest, wilcoxon
 
     pw, ps = PRIMARY["privacy_weak"], PRIMARY["privacy_strong"]
     rows = []
@@ -315,6 +364,14 @@ def privacy_contrast(G, V, config: AnalysisConfig) -> "pd.DataFrame":
         vv = V.reindex(part.index)[[pw, ps]].dropna()
         row["flag_rate_pop"] = float(vv[pw].astype(bool).mean()) if len(vv) else float("nan")
         row["flag_rate_rmia"] = float(vv[ps].astype(bool).mean()) if len(vv) else float("nan")
+        # The verdict form of H2b, which is what "ranks methods as more private" amounts to
+        # once a band decides pass/fail: of the models the attacks disagree on, does the
+        # population attack pass more of them? Exact McNemar on the discordant pairs.
+        lenient = int(((vv[pw] == False) & (vv[ps] == True)).sum())  # noqa: E712
+        strict = int(((vv[pw] == True) & (vv[ps] == False)).sum())  # noqa: E712
+        row["pop_passes_rmia_flags"], row["pop_flags_rmia_passes"] = lenient, strict
+        row["mcnemar_p"] = (float(binomtest(lenient, lenient + strict, 0.5).pvalue)
+                            if lenient + strict else float("nan"))
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -322,9 +379,27 @@ def privacy_contrast(G, V, config: AnalysisConfig) -> "pd.DataFrame":
 # --------------------------------------------------------------------------- per method
 
 
-def method_summary(flags, G, V) -> "pd.DataFrame":
+def signed_gaps(flags, validity, bands, index):
+    """G with its sign: ``(m(Mu) - mean m(Mr)) / (m(M0) - mean m(Mr))``. Positive is on M0's
+    side of the retrains (1 = at M0, above 1 = beyond it); negative is the opposite side --
+    an unlearned model pushed somewhere neither the retrains nor M0 are. The registered G is
+    its absolute value; the sign says which kind of "far" a large G is."""
+    import pandas as pd
+
+    key = ["forget_id", "audit", "metric", "probe_set"]
+    f = flags[flags["probe_set"].isin(PROBES) & flags["oracle_gap"].notna()]
+    f = f.merge(bands[key + ["mean"]].rename(columns={"mean": "band_mean"}), on=key, how="left")
+    f = f.merge(validity[key + ["m0_gap_raw"]], on=key, how="left")
+    f["signed"] = (f["value"] - f["band_mean"]) / f["m0_gap_raw"]
+    S = f.set_index(KEYS + ["metric"])["signed"].astype(float).unstack("metric")
+    S.columns.name = None
+    return S.reindex(index=index)
+
+
+def method_summary(flags, G, V, S=None) -> "pd.DataFrame":
     """RQ1 and §16.2's "mean and standard deviation for every main metric across seeds":
-    per condition, method and metric -- the raw value, G, and the share flagged."""
+    per condition, method and metric -- the raw value, G (median, and the share beyond M0),
+    the signed G's median, and the share flagged. Medians, because G's tail is the denominator."""
     import pandas as pd
 
     raw = flags[flags["probe_set"].isin(PROBES)].set_index(KEYS + ["metric"])["value"]
@@ -332,49 +407,112 @@ def method_summary(flags, G, V) -> "pd.DataFrame":
     for metric in G.columns:
         g, v = G[metric], V[metric]
         r = raw.xs(metric, level="metric").reindex(G.index)
-        df = pd.DataFrame({"G": g, "flag": v.map({True: 1.0, False: 0.0}), "value": r})
+        s = S[metric] if S is not None and metric in S else pd.Series(float("nan"), index=G.index)
+        df = pd.DataFrame({"G": g, "S": s, "flag": v.map({True: 1.0, False: 0.0}), "value": r})
         for (cond, method), part in df.groupby(level=["forget_id", "method"]):
+            gg = part["G"].dropna()
             rows.append({"forget_id": cond, "method": method, "metric": metric,
                          "n": int(part["value"].notna().sum()),
                          "value_mean": part["value"].mean(), "value_sd": part["value"].std(),
+                         "G_median": gg.median() if len(gg) else float("nan"),
                          "G_mean": part["G"].mean(), "G_sd": part["G"].std(),
+                         "share_beyond_m0": float((gg > 1).mean()) if len(gg) else float("nan"),
+                         "signed_median": part["S"].median(),
                          "flag_rate": part["flag"].mean()})
     return pd.DataFrame(rows)
 
 
 def rank_tables(summary) -> "pd.DataFrame":
-    """§15.1, DESCRIPTIVE ONLY: methods ranked per condition by mean G on each family's primary
-    metric, 1 = most retrain-like. Never an inferential statistic (master reference §16.2)."""
+    """§15.1, DESCRIPTIVE ONLY: methods ranked per condition by median G on each family's
+    primary metric, 1 = most retrain-like. Never an inferential statistic (master reference
+    §16.2)."""
     import pandas as pd
 
     rows = []
     for fam, metric in PRIMARY.items():
         part = summary[summary["metric"] == metric]
         for cond, c in part.groupby("forget_id"):
-            c = c.dropna(subset=["G_mean"])
-            ranks = c["G_mean"].rank(method="min")
+            c = c.dropna(subset=["G_median"])
+            ranks = c["G_median"].rank(method="min")
             for (_, r), k in zip(c.iterrows(), ranks):
                 rows.append({"family": fam, "metric": metric, "forget_id": cond,
-                             "method": r["method"], "G_mean": r["G_mean"], "rank": int(k)})
+                             "method": r["method"], "G_median": r["G_median"], "rank": int(k)})
     return pd.DataFrame(rows)
 
 
 def difficulty_spread(G) -> "pd.DataFrame":
-    """H4, descriptively: how far apart the methods are at each condition, per primary metric --
-    the SD of the method means of G, and eta-squared, the share of the condition's G variance
-    the method explains. H4 predicts both largest at mem-high and smallest at mem-low."""
+    """H4, descriptively: how far apart the methods are at each condition, per primary metric.
+
+    On log G, where it is free of the denominator: within one condition M0's gap is a constant
+    shift of every model's log G, so the SD of the method means compares like with like across
+    conditions. (eta^2, the share of variance the method explains, is kept but saturates at
+    0.75-0.99 everywhere -- seeds agree so closely that it cannot separate conditions.)
+    H4 predicts the spread largest at mem-high and smallest at mem-low."""
     import pandas as pd
 
     rows = []
     for fam, metric in PRIMARY.items():
         if metric not in G:
             continue
-        for cond, part in G[metric].dropna().groupby(level="forget_id"):
+        logG = np.log(G[metric].where(G[metric] > 0))
+        for cond, part in logG.dropna().groupby(level="forget_id"):
             by = part.groupby(level="method")
             means = by.mean()
             ss_tot = float(((part - part.mean()) ** 2).sum())
             ss_between = float((by.size() * (means - part.mean()) ** 2).sum())
             rows.append({"family": fam, "metric": metric, "forget_id": cond, "n": int(len(part)),
-                         "methods": int(len(means)), "method_sd": float(means.std()),
+                         "methods": int(len(means)), "method_sd_log": float(means.std()),
                          "eta_sq": ss_between / ss_tot if ss_tot > 0 else float("nan")})
     return pd.DataFrame(rows)
+
+
+def agreement_by_condition(corr) -> "pd.DataFrame":
+    """H4's second half: how much do the audit families agree at each condition? The mean
+    per-condition tau over the registered pairs, and how many of them are negative."""
+    import pandas as pd
+
+    per = corr[~corr["scope"].isin(["pooled", "within"])].dropna(subset=["tau"])
+    rows = []
+    for cond, c in per.groupby("scope"):
+        rows.append({"forget_id": cond, "pairs": int(len(c)), "mean_tau": float(c["tau"].mean()),
+                     "negative_pairs": int((c["tau"] < 0).sum()),
+                     "ci_excludes_zero": int(((c["tau_lo"] > 0) | (c["tau_hi"] < 0)).sum())})
+    return pd.DataFrame(rows)
+
+
+def canary_continuous(G, canary, config: AnalysisConfig | None = None) -> "pd.DataFrame":
+    """RQ6 by degree, not verdict: does each audit's G order the canary models by how much of
+    the canary association they actually kept?
+
+    Stage 7 scored verdicts against the ground truth, and every healthy canary model retains
+    (all positives) -- a verdict cannot rank them. ``canary_top_wrong`` measures the amount, so
+    an audit that measures retention should rise with it: Kendall's tau over the healthy canary
+    models. The 25 are five methods by five seeds, so the ordering is mostly between methods.
+    """
+    import pandas as pd
+    from scipy.stats import kendalltau
+
+    if canary is None or not len(canary) or "canary_top_wrong" not in canary:
+        return pd.DataFrame()
+    truth = canary.set_index("run_id")["canary_top_wrong"]
+    conds = set(G.index.get_level_values("forget_id"))
+    cond = next((c for c in conds if c.startswith("canary")), None)
+    if cond is None:
+        return pd.DataFrame()
+    gc = G.xs(cond, level="forget_id")
+    rows = []
+    for metric in gc.columns:
+        s = gc[metric].dropna()
+        t = np.asarray(s.index.get_level_values("run_id").map(truth), float)
+        ok = np.isfinite(t)
+        if ok.sum() >= 10 and np.std(s.to_numpy()[ok]) > 0:
+            x, y = s.to_numpy()[ok], t[ok]
+            r = kendalltau(x, y)
+            row = {"metric": metric, "n": int(ok.sum()), "tau": float(r.statistic),
+                   "p": float(r.pvalue)}
+            if config is not None:
+                row.update({k: v for k, v in _bootstrap(
+                    x, y, config, salt=500 + sorted(gc.columns).index(metric)).items()
+                    if k.startswith("tau")})
+            rows.append(row)
+    return pd.DataFrame(rows).sort_values("tau", ascending=False, ignore_index=True)

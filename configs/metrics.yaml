@@ -137,6 +137,19 @@ privacy_strong:
       per-example leakage this attack exists to expose.
 
 representation:
+  # APPROVED 1 Oct 2026 -- the four-person sign-off, for H3. G measures distance from the
+  # retrains, not proximity to M0, so it cannot tell "kept M0's representation" from "pushed
+  # somewhere else"; H3 is about the former (STATUS.md, Stage 8 results, H3).
+  cka_to_original:
+    family: representation
+    direction: lower_better
+    oracle_ref: true
+    probe_sets: [layer1, layer2, layer3, layer4]
+    doc: >
+      Linear CKA between a model's GAP-pooled activations and those of its own original model
+      M0 (same train seed, same mixed probe). 1 = M0's representation. The retrains' value is
+      the band -- a paired retrain shares M0's initialisation, as every M0-descended model does,
+      so the comparison is like for like. M0's own value is 1 by construction.
   cka_linear:
     family: representation
     direction: closer_to_oracle

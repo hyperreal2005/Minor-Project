@@ -20,7 +20,7 @@ genuinely unresolved — as opposed to merely unwritten.
 | 5 — Full-pipeline pilot | all | **COMPLETE** | ✅ 240/240 from final implementations; cross-account consistency verified |
 | 6 — Audits | B, C | **COMPLETE** | ✅ 240/240, all six audits, every re-run landed; 9,238 rows |
 | 7 — Calibration & validity | D | **COMPLETE** | ✅ Every audit has a retrain FPR and a canary accuracy; guard, effect floor, twin check; `activation_l2` retired |
-| 8 — Analysis | D | **BUILT — awaiting first run** | `forgetcheck analyse` / notebook 06; 587 tests |
+| 8 — Analysis | D | **RUN — RESULTS IN** | Reproduced exactly off-Kaggle; one team decision open (H3) and the figures |
 
 > **Two different stage numberings are in play.** The table above is the *plan's build*
 > stages. `forgetcheck queue --stage N` uses *queue* stages, which are not the same: queue 3 =
@@ -2218,6 +2218,219 @@ scale, §16.2 mixed models, and §15.1 rank tables, descriptive only.
 - **Bootstrap caveat:** it resamples instances, as registered, which ignores that the five seeds
   of a method share an M0. The mixed models carry that structure; the CIs are read with it in
   mind.
+
+## STAGE 8 RESULTS (1 Oct 2026)
+
+Notebook 06 ran on Kaggle; the bundle was analysed here. **All 11 Kaggle tables were reproduced
+exactly** from the calibration tables alone, bootstrap intervals included (seed 300).
+
+The data:
+
+- 197 healthy unlearned models (5 methods × 8 conditions × 5 seeds, less 3 damaged at mem-low);
+- 43 damaged models excluded;
+- 30 marked metric × condition cells;
+- `activation_l2` retired.
+
+**Sensitivity:** re-including the 3 damaged mem-low models changes no registered statistic at
+all. Every primary metric but behaviour is marked at mem-low, so they never enter a pair.
+
+**Stage 7's last open item:** the relearning-only "faster than every retrain" flags are SalUn ×4
+at rand-500. At mem-low they are fine-tune ×4, SalUn ×2 and l1sparse ×1, plus one SCRUB that is
+slower.
+
+### Changed after the first run, and why — read before the numbers
+
+The first real run showed G with a heavy right tail: 136 for NegGrad+ behaviour at mem-low, and
+2.5–31 for CKA at the random sets. The cause is the denominator. Where M0 is statistically
+separable from the retrains but only just — JS at mem-low, a 0.0002 gap; CKA at the random sets,
+0.002–0.007 — G divides by almost nothing. **G > 1 itself is a result**: by the plan's own
+definition, the model moved farther from a retrain than M0 is. Its *magnitude* is not.
+
+So, decided on G's distribution before any coefficient was read as a result:
+
+- **Confirmatory models are fitted on log G.** There M0's gap is a per-condition constant that
+  the condition term absorbs exactly, so each method coefficient is a clean ratio,
+  exp(coef) = "times farther from the retrains than fine-tune". The raw-G fits were dominated by
+  a handful of values (js intercept −2.3 ± 7) and are superseded.
+- **Magnitudes are reported as medians** and as the share with G > 1. Rank statistics are
+  unaffected by any of this.
+- **H4's spread is the SD of method means of log G**, which is free of the denominator. η²
+  saturates at 0.75–0.99 everywhere and cannot separate conditions.
+
+**Added after seeing the data, so exploratory, and to be labelled so in the paper:** signed G,
+the share beyond M0, continuous canary validity, RQ4 on the G scale, a McNemar test for H2b, and
+agreement by condition. The registered analyses (§15.2, §15.3, §16.2 models, rank tables) are
+reported as registered, except for the model scale above.
+
+### RQ1 — how close to a retrain? None of the methods, by any calibrated audit
+
+- **Verdicts.** Calibrated bands flag **100%** of healthy models on behaviour, representation and
+  relearning wherever those are scored. The exception is behaviour at mem-low, at 77%. Privacy
+  flags 84–100%, except mem-med (52% population, 60% RMIA).
+- **Beyond M0.** On representation, 88–100% of models have G > 1 at mem-med and every random set:
+  unlearning moves representations *farther from retraining than doing nothing*. SCRUB is the
+  exception (median G 1.0–1.6); the others reach 2–30.
+- **The negative control.** At mem-low, behaviour G > 1 for 86% of models, and the signed G is
+  −4 to −146. M0 is a retrain there in all but name, and the methods push outputs to a place
+  neither occupies.
+- **RMIA and relearning** sit between retrain and M0 (G in 0–1) almost everywhere.
+
+### RQ2 / H2a — behaviour vs privacy: supported, and condition-dependent
+
+Within-condition τ is 0.17 (population) and 0.03 (RMIA). Per condition it runs from **+0.75 at
+mem-high to −0.71 at canary**, both with tight intervals.
+
+### H2b — population vs RMIA: the rankings differ (supported); "more lenient" is not established
+
+Pooled τ = −0.09 [−0.19, +0.01] and within = 0.24. The two attacks agree only where the signal
+is strong (canary +0.82, mem-high +0.70); at mem-med they disagree (−0.30), and at the random sets
+τ is about 0.
+
+On verdicts, the population attack passes 20 models that RMIA flags, against 10 the other way
+(McNemar p = 0.099). NegGrad+ goes the other way (0 vs 5).
+
+They disagree about *which* methods are private:
+
+| method vs fine-tune (log-G ratio) | RMIA | population MIA |
+|---|---|---|
+| SalUn | **×0.37** (most private) | ×0.76 (not significant) |
+| NegGrad+ | **×0.46** | ×0.95 (not significant) |
+| SCRUB | ×0.91 (not significant) | **×0.67** (the only significant term) |
+
+### RQ3 / H1 — the replication holds trivially; the effect-size prediction is not supported
+
+- **Verdict form:** untestable. No model passes behaviour wherever representation is scored.
+- **On G:** 21 instances are behaviourally nearer a retrain than M0, and **12 of them are
+  representationally nearer M0**: canary 7 of 16, mem-high 5 of 5. Nowhere else does any model
+  look behaviourally retrain-like.
+- H1's "distinguishable at representation" holds for every model.
+- Its prediction that the effect is "larger for high memorization" runs the wrong way on
+  magnitude: representation departures are largest at the random and medium sets, where
+  unlearning perturbs representations past M0.
+
+### RQ4 — relearning reveals what the strong privacy attack misses: yes, concentrated in SalUn
+
+- **Verdict form:** empty, because behaviour flags everything.
+- **On G:** of the 58 instances RMIA calls retrain-like, **41 relearn like M0**. Of those 41,
+  **25 are SalUn** (SalUn: 28 RMIA-private, 25 relearning-M0-like).
+- **At canary**, the ground truth adjudicates all 18: those models retain the canary association,
+  so relearning is right and RMIA wrong.
+- **With Stage 7**, every hidden-knowledge flag at rand-500 is SalUn.
+- The likely mechanism: random relabelling of the forget set targets exactly what membership
+  inference reads, its confidence on those examples, without removing what relearning recovers.
+
+### H3 — not testable with the registered metrics; the data are suggestive
+
+Within-condition τ(representation G, relearning G) = **−0.34**, negative at every condition but
+canary (+0.61). G measures distance *from the retrains*, not proximity *to M0*, and H3 is about
+the latter.
+
+The pattern fits H3's mechanism: SCRUB keeps representations at M0's distance (G ≈ 1) and
+relearns most like M0 (0.65–0.98), while NegGrad+, SalUn and l1sparse push representations far
+past M0 and relearn more like retrains. Confirming it needs a representation-to-M0 measure.
+
+### RQ5 / H4 — method differences depend on the forget set, but not in H4's order
+
+- **Interaction:** method × condition on log G is significant for every primary metric
+  (p ≤ 0.002) on the difficulty axis.
+- **Where the methods spread most** (SD of method means of log G, at fixed size 3000):
+  - behaviour: **mem-low 2.12**, the methods' side effects;
+  - RMIA: mem-med 1.33;
+  - CKA: mem-med 0.90;
+  - population MIA: mem-high 1.50, the only metric in H4's order.
+- **Agreement** (mean per-condition τ over the registered pairs): **mem-high 0.38** (6 of 7
+  intervals exclude 0), random sets about 0.12, mem-med 0.01, canary −0.12 (the MIAs run
+  backwards there).
+- So H4's disagreement prediction is *reversed* at the natural strata. Audits agree most where
+  memorization is high, and disagree where the signal is weak and at the canary.
+- The low-memorization control is not quiet: on behaviour the methods differ there more than
+  anywhere.
+
+### RQ6 by degree — which audits track *how much* a model remembers?
+
+Kendall τ between each audit's G and `canary_top_wrong`, over the 25 healthy canary models:
+
+- **Track memory, interval clear of 0:** `js_to_original` **+0.68** [0.45, 0.84], `relearn_t80`
+  +0.53, linear CKA +0.51, `logit_l2` +0.43, RBF CKA +0.41, `sde_hsic` +0.33.
+- **Positive, but the interval crosses 0:** `js_to_oracle` +0.30, `relearn_auc` +0.27.
+- **No membership-inference metric tracks memory.** All five point estimates are *negative*,
+  −0.23 to −0.38, but only `mia_acc_pop`'s interval excludes 0 (−0.68 to −0.05). RMIA rates
+  l1sparse, which has the least canary memory, as the most M0-like, and SCRUB, with the most,
+  as among the most retrain-like.
+
+**Corrected 1 Oct:** the first write-up said "every MIA metric ranks backwards". That holds for
+the point estimates; with intervals it is "none tracks memory, all lean backwards, one
+significantly". The 25 models are 5 methods × 5 seeds, so this is mostly an ordering of methods,
+and an instance bootstrap ignores that clustering, which makes the intervals optimistic.
+
+### Confirmatory models (log G; seed variance ≈ 0 throughout)
+
+Method ratios against fine-tune, averaged over conditions (the interaction is real, so these are
+averages):
+
+| | behaviour | population MIA | RMIA | CKA | relearning |
+|---|---|---|---|---|---|
+| l1sparse | ×1.26 | ×0.76 | ×0.93 | **×1.47** | **×0.69** |
+| NegGrad+ | **×2.45** | ×0.95 | **×0.46** | **×1.82** | **×0.48** |
+| SalUn | **×1.53** | ×0.76 | **×0.37** | **×2.17** | **×0.77** |
+| SCRUB | **×1.38** | **×0.67** | ×0.91 | **×0.47** | ×1.02 |
+
+Bold marks an interval excluding ×1. The same two methods, SalUn and NegGrad+, are the *most*
+retrain-like by RMIA and relearning, and the *least* by behaviour and representation.
+
+### Verdict disagreement (§15.3) is saturated
+
+Pooled disagreement is 0–0.17, because behaviour, representation and relearning flag everything.
+The registered pass/fail statistic cannot separate audits in this study, which is itself
+reportable. The informative disagreement is on G.
+
+### H3 — built, approved, awaiting its run (1 Oct 2026)
+
+`cka_to_original` was **approved** (four-person sign-off, 1 Oct). It is linear CKA between each
+model's activations and those of its own M0, per layer. It is calibrated like `js_to_original`:
+the band comes from the paired retrains, which share M0's initialisation exactly as every
+M0-descended model does, and M0 against itself is the anchor of 1.
+
+`forgetcheck original-similarity` computes it:
+- the models' activations come from the Stage 6 cache;
+- M0's are computed fresh, 5 forward passes per condition;
+- it is resumable;
+- its records go to `<run_id>--original-sim[-<cond>]` shards that no audit's resume check reads.
+
+An end-to-end test on real checkpoints checks that M0's own row is exactly 1, the others fall in
+(0, 1], and a rerun skips finished models. The analysis tests H3 as τ(G of `cka_to_original`,
+relearning G), which H3 predicts is positive, and Figure 7 draws it. It runs as **Step 0 of
+notebook 06** (GPU).
+
+### Figures (plan §8) — `forgetcheck figures`, from the tables alone
+
+| | file | finding |
+|---|---|---|
+| 1 | `fig1_native_validity` | The audits' own rules flag genuine retrains (up to 17/17); calibrated: 2.5% and 4.3% |
+| 2 | `fig2_canary_degree` | Behaviour, representation and relearning track memory; no MIA does |
+| 3 | `fig3_method_ratios` | Which method looks most retrain-like depends on the audit |
+| 4 | `fig4_agreement_by_condition` | Audits agree at mem-high and invert at the canary |
+| 5 | `fig5_beyond_m0` | Unlearning moves representations farther from retraining than M0 |
+| 6 | `fig6_matrix` | Within-condition τ between every pair of metrics (the plan's disagreement matrix) |
+| 7 | `fig7_h3` | H3, once its data exists |
+
+They follow one visual system: a one-hue sequential scale; blue–gray–red for polarity, a pair
+that passes the CVD and contrast validator; hairline grids; surface gaps between cells rather
+than borders; cell text in ink chosen by luminance. A hollow marker means the interval crosses
+the null, so significance is never carried by colour alone. Each figure was rendered and
+inspected; three title collisions were found and fixed.
+
+The calibrated false-positive rate is quoted on the primary probes:
+- 14/560 = 2.5% at the five-retrain conditions;
+- 11/255 = 4.3% at mem-high.
+
+The first read's 16/595 and 11/284 included the since-retired `activation_l2`.
+
+### Open
+
+1. **Run notebook 06** (GPU, for Step 0), then download the bundle. It now also carries the
+   figures and H3's records.
+2. Read H3 and write it up.
 
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 

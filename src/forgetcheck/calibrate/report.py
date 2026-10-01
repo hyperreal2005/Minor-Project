@@ -64,7 +64,7 @@ PROTOCOL_CONSTANTS = frozenset({"relearn_randinit_auc"})
 #: Metrics defined relative to M0 itself. M0's value is fixed by construction (its divergence
 #: from itself is 0), so "power on M0" would be a tautology and is not reported. The first real
 #: calibration showed js_to_original detecting M0 at 100% everywhere, for exactly that reason.
-M0_SELF_REFERENCED = frozenset({"js_to_original"})
+M0_SELF_REFERENCED = frozenset({"js_to_original", "cka_to_original"})
 
 #: Guard metrics say whether *another* measurement can be trusted -- did relearning wreck the
 #: model? -- not whether anything was forgotten. They get a band (the guard needs a retrain
