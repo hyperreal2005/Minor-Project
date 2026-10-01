@@ -588,3 +588,52 @@ def test_relearning_only_flags_name_their_methods(tables):
     assert sum(counts.values()) == r.loc[PRIMARY, "relearn_only_faster"]
     assert "neggrad" not in counts  # the destroyed control is guarded out
     assert r.loc[PRIMARY, "slower_methods"] == ""
+
+
+def test_analyse_runs_on_what_calibrate_writes(records_dir, monkeypatch, capsys):
+    """Stage 8 on the real record shapes, through the real commands: calibrate, then analyse.
+    The first Stage 7 run died on a shape no hand-built frame had; this is that check for 8."""
+    import pandas as pd
+
+    from forgetcheck import cli
+    from forgetcheck.config import find_configs
+
+    class Ctx:
+        pass
+
+    ctx = Ctx()
+    ctx.records_dir, ctx.primary_condition = records_dir, PRIMARY
+    ctx.audits = yaml.safe_load((find_configs() / "audits.yaml").read_text(encoding="utf-8"))
+    ctx.audits["agreement"]["bootstrap_resamples"] = 300  # the statistics, not their precision
+    monkeypatch.setattr(cli, "_ctx", lambda args: ctx)
+    assert cli.cmd_calibrate(cli.build_parser().parse_args(["calibrate"])) == 0
+    capsys.readouterr()
+    assert cli.cmd_analyse(cli.build_parser().parse_args(["analyse"])) == 0
+    out = capsys.readouterr().out
+    assert "STAGE 8" in out and "CONFIRMATORY" in out and "DESCRIPTIVE ONLY" in out
+
+    an = records_dir.parent / "analysis"
+    inv = pd.read_parquet(an / "inventory.parquet").iloc[0]
+    assert "neggrad" not in inv["methods"].split(", ") and inv["retired"] == "activation_l2"
+    assert inv["instances"] == len(CONDITIONS) * (len(METHODS) - 1) * len(SEEDS)
+    corr = pd.read_parquet(an / "correlations.parquet")
+    assert set(corr.loc[corr["scope"] == "pooled", "pair"]) == {
+        "behavior vs privacy_weak", "behavior vs privacy_strong", "behavior vs representation",
+        "privacy_weak vs reversibility", "privacy_strong vs reversibility",
+        "representation vs reversibility", "privacy_weak vs privacy_strong"}
+
+
+def test_no_confirmatory_interval_is_a_degenerate_fit(tables, tmp_path):
+    """On this exact data statsmodels' default optimizer reported cka_linear's intercept as
+    0.000 [-800539, +800539] with a log-likelihood of +inf -- printed as a result. Every
+    interval must be finite and of a size G can have."""
+    import numpy as np
+
+    from forgetcheck.analysis import AnalysisConfig, analyse
+    from forgetcheck.calibrate import write_tables
+
+    write_tables(tables, tmp_path)
+    me = analyse(tmp_path, AnalysisConfig(resamples=50))["mixed_effects"]
+    assert len(me) and np.isfinite(me[["coef", "lo", "hi"]].to_numpy()).all()
+    assert ((me["hi"] - me["lo"]) < 1.0).all()
+    assert set(me["optimizer"]) <= {"lbfgs", "powell", "nm"}

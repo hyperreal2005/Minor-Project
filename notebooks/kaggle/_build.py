@@ -886,6 +886,49 @@ def nb_calibrate() -> dict:
     ])
 
 
+BUNDLE_STAGE8 = """\
+# One small file holding every Stage 7 and Stage 8 table: result tables only, no checkpoints.
+import zipfile
+from pathlib import Path
+
+bundle = Path("/kaggle/working/forgetcheck_stage8_results.zip")
+with zipfile.ZipFile(bundle, "w", zipfile.ZIP_DEFLATED) as z:
+    for sub in ("calibration", "analysis"):
+        for p in sorted((REPO_DIR / "results" / sub).glob("*.parquet")):
+            z.write(p, f"results/{sub}/{p.name}")
+    z.write("calibrate_report.txt", "results/calibrate_report.txt")
+print(f"{bundle}  ({bundle.stat().st_size / 1e6:.1f} MB)")
+"""
+
+
+def nb_analyse() -> dict:
+    header = (
+        "# 06 - Analyse\n\n"
+        "Stage 8. Do the audits agree, model by model? Instance-level rank correlation of the "
+        "normalized oracle gap, pass/fail disagreement, the patterns the hypotheses name, and "
+        "the confirmatory mixed models -- all from Stage 7's calibration tables, so every number "
+        "traces to a record.\n\n"
+        "**Attach** `forgetcheck-artifacts` and `forgetcheck-stage6`. **CPU only**: set "
+        "Accelerator to None. A few minutes end to end.\n"
+    )
+    return notebook([
+        md(header),
+        code(INSTALL),
+        code(SETUP_AUDIT),
+        md("## Step 1 - calibrate\n\nRebuilds Stage 7's tables from the records (about a "
+           "minute). Its full report was read in Stage 7; only the lines Stage 8 needs are "
+           "shown, and the whole report is kept in the download."),
+        code("!{CLI} --root . calibrate > calibrate_report.txt\n"
+             "!grep -E 'records:|recovered|available for|relearning-only' calibrate_report.txt\n"),
+        md("## Step 2 - analyse"),
+        code("!{CLI} --root . analyse\n"),
+        md("## Step 3 - one file to download\n\nIn the right-hand panel, under **Output** "
+           "(`/kaggle/working`), open the menu next to `forgetcheck_stage8_results.zip` and "
+           "download it. It holds only result tables (a few MB)."),
+        code(BUNDLE_STAGE8),
+    ])
+
+
 def main() -> None:
     notebooks = {
         "00_verify_setup.ipynb": nb_verify(),
@@ -913,6 +956,7 @@ def main() -> None:
         ),
         "04_audit.ipynb": nb_audit(),
         "05_calibrate.ipynb": nb_calibrate(),
+        "06_analyse.ipynb": nb_analyse(),
     }
     for name, nb in notebooks.items():
         path = HERE / name

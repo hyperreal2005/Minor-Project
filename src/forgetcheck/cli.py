@@ -500,6 +500,26 @@ def cmd_calibrate(args) -> int:
     return 0
 
 
+def cmd_analyse(args) -> int:
+    """Stage 8: instance-level agreement, disagreement and the confirmatory models. CPU only,
+    from Stage 7's calibration tables -- run `calibrate` first."""
+    from .analysis.agreement import AnalysisConfig
+    from .analysis.report import analyse, print_report, write_tables
+
+    ctx = _ctx(args)
+    cal = ctx.records_dir.parent / "calibration"
+    if not (cal / "flags.parquet").is_file():
+        print(f"no calibration tables under {cal}; run `forgetcheck calibrate` first")
+        return 1
+    tables = analyse(cal, AnalysisConfig.from_context(ctx))
+    out = ctx.records_dir.parent / "analysis"
+    for path in write_tables(tables, out):
+        print(f"  {path.stem:20s} {len(tables[path.stem]):6d} rows -> {path}")
+    print()
+    print_report(tables)
+    return 0
+
+
 def cmd_diagnose_twins(args) -> int:
     """Does a shared initialisation make models look retrain-like? Cached outputs only, no GPU.
 
@@ -686,6 +706,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     cal = sub.add_parser("calibrate", help="stage 7: bands and audit validity from the records")
     cal.set_defaults(func=cmd_calibrate)
+
+    an = sub.add_parser("analyse", help="stage 8: agreement, disagreement, mixed models (CPU)")
+    an.set_defaults(func=cmd_analyse)
 
     tw = sub.add_parser("diagnose-twins",
                         help="does a shared initialisation make models look retrain-like? (CPU)")

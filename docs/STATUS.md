@@ -19,8 +19,8 @@ genuinely unresolved — as opposed to merely unwritten.
 | 4 — Unlearning methods | A, B | **DONE** | Six methods + SSD behind one interface |
 | 5 — Full-pipeline pilot | all | **COMPLETE** | ✅ 240/240 from final implementations; cross-account consistency verified |
 | 6 — Audits | B, C | **COMPLETE** | ✅ 240/240, all six audits, every re-run landed; 9,238 rows |
-| 7 — Calibration & validity | D | **RUN — RESULTS IN** | 52 oracles + 40 M0 audited, calibrated; shared-initialisation check pending (CPU) |
-| 8 — Analysis | D | not started | — |
+| 7 — Calibration & validity | D | **COMPLETE** | ✅ Every audit has a retrain FPR and a canary accuracy; guard, effect floor, twin check; `activation_l2` retired |
+| 8 — Analysis | D | **BUILT — awaiting first run** | `forgetcheck analyse` / notebook 06; 587 tests |
 
 > **Two different stage numberings are in play.** The table above is the *plan's build*
 > stages. `forgetcheck queue --stage N` uses *queue* stages, which are not the same: queue 3 =
@@ -2171,6 +2171,53 @@ the timings are wanted: attach that older version and check with
 
 1. Which methods the relearning-only flags fall on (next `calibrate` run, no extra step).
 2. `runtime_s`: only from an older dataset version, only if the timings are wanted.
+
+## STAGE 8 — the analysis, built and fixed before any result (1 Oct 2026)
+
+`forgetcheck analyse` reads only `results/calibration/` (`flags`, `validity`), so every number
+traces to a record (the plan's gate), and it runs anywhere: Kaggle notebook 06, or a laptop on
+the downloaded tables. It implements what the master reference registered: §15.2 instance-level
+τ/ρ with bootstrap CIs (10,000 resamples), §15.3 pass/fail disagreement, §15.4 G as the common
+scale, §16.2 mixed models, and §15.1 rank tables, descriptive only.
+
+### Decisions fixed in code before the first real run
+
+- **Unit:** each unlearned model at one condition.
+  - **Out:** the 43 damaged models (all 40 `neggrad`, three at mem-low), retired metrics, and
+    cells the safeguards mark (G is undefined there). Every exclusion is counted in the report.
+  - **In:** 197 instances, 5 methods.
+- **Primary metric per family**, used for the registered pairs; every other metric is in the full
+  matrix:
+  - behaviour: `js_to_oracle`
+  - weak privacy: `mia_auc_pop`
+  - strong privacy: `mia_auc_rmia`. AUC against AUC, so the two attacks are compared like for
+    like; RMIA's TPR, the registry's headline, is in the matrix.
+  - representation: `cka_linear` at layer4, the declared primary
+  - reversibility: `relearn_auc`, the only reversibility metric defined everywhere
+  - SDE's family is registered as unranked, so it is secondary throughout.
+- **Registered pairs (§15.2):** behaviour vs each privacy family, behaviour vs representation,
+  each privacy family vs relearning, representation vs relearning, population vs RMIA.
+- **Pooled, per condition, and within.** Pooling across conditions can manufacture agreement
+  when every metric shifts with the condition. So each correlation is also reported per
+  condition, and as their n-weighted mean (`within`). A test plants exactly that case: pooled
+  τ > 0.5, within ≈ 0.
+- **Hypothesis-shaped counts:**
+  - RQ3: behaviourally G < 0.5 but representationally G > 0.5.
+  - H1: passes behaviour, flagged by representation.
+  - RQ4: passes behaviour and both privacy audits, flagged by relearning.
+  - H2b: paired G_pop − G_rmia, with a bootstrap CI and a Wilcoxon test.
+  - H4: η² of method per condition, plus a likelihood-ratio test of method × condition on the
+    difficulty axis.
+- **Confirmatory models:** `G ~ method + condition + (1 | seed)`, with references fine-tune and
+  `rand-3000`. The condition terms then read directly as the difficulty axis (strata vs a random
+  set of the same size) and the size axis.
+- **Optimizer.** statsmodels' default (L-BFGS) produced a degenerate fit on the realistic fixture
+  when the seed variance was zero: log-likelihood +∞, intercept 0.000, interval ±800,000, printed
+  as a result. Every fit now tries L-BFGS, Powell and Nelder–Mead, keeps the best finite
+  converged maximum, and reports which optimizer won. A regression test pins it.
+- **Bootstrap caveat:** it resamples instances, as registered, which ignores that the five seeds
+  of a method share an M0. The mixed models carry that structure; the CIs are read with it in
+  mind.
 
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 
