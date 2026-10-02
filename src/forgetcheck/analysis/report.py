@@ -103,7 +103,11 @@ def _h(title: str, *notes: str) -> None:
 
 
 def _ci(v, lo, hi) -> str:
-    return "  --" if v != v else f"{v:+.2f} [{lo:+.2f}, {hi:+.2f}]"
+    if v != v:
+        return "  --"
+    if lo is None or hi is None or lo != lo or hi != hi:  # within-condition: no interval
+        return f"{v:+.2f}"
+    return f"{v:+.2f} [{lo:+.2f}, {hi:+.2f}]"
 
 
 def _per_family(s, value: str, digits: int = 2):

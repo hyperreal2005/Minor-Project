@@ -685,6 +685,33 @@ def test_figures_render_from_what_analyse_writes(tables, tmp_path):
     assert {p.suffix for p in paths} == {".pdf", ".png"}
 
 
+@pytest.mark.parametrize("link", ["symlink", "link"])
+def test_figures_replace_a_restored_link(tmp_path, link):
+    """On Kaggle a pushed figure is restored as a symlink into read-only /kaggle/input. Saving
+    must replace the link, not write through it: EROFS there, and the source rewritten anywhere.
+    A hard link shows the same write-through where symlinks need privileges (Windows)."""
+    import os
+
+    import matplotlib.pyplot as plt
+
+    from forgetcheck.analysis.figures import _save
+
+    src = tmp_path / "input" / "fig1.bin"
+    src.parent.mkdir()
+    src.write_bytes(b"old")
+    out = tmp_path / "figures"
+    out.mkdir()
+    try:
+        for ext in ("pdf", "png"):
+            getattr(os, link)(src, out / f"fig1.{ext}")
+    except OSError:
+        pytest.skip(f"{link} not permitted here")
+    paths = _save(plt.figure(), out, "fig1")
+    assert src.read_bytes() == b"old"
+    assert all(not p.is_symlink() and p.stat().st_size > 100 for p in paths)
+    assert not list(out.glob("*.tmp"))
+
+
 def test_m0_referenced_metrics_carry_m0s_gap_for_the_signed_scale(tables):
     """H3 is directional, so it needs the sign: calibrate records M0's gap even for metrics
     whose M0 value is fixed by construction (1 for cka_to_original, 0 for js_to_original)."""

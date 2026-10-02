@@ -115,7 +115,7 @@ def instance_tables(flags, validity):
     marked = np.zeros(len(validity), dtype=bool)
     for col in ("low_discriminability", "below_min_effect"):
         if col in validity:
-            marked |= validity[col].fillna(False).astype(bool).to_numpy()
+            marked |= validity[col].eq(True).to_numpy(dtype=bool)
     marks["marked"] = marked
     f = f.merge(marks, on=["forget_id", "audit", "metric", "probe_set"], how="left")
     f["marked"] = f["marked"].fillna(False).astype(bool)

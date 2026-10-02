@@ -99,10 +99,14 @@ def _heatmap(ax, values, *, cmap, vmin, vmax, labels=None, bold=None, missing="-
 
 
 def _save(fig, out: Path, name: str) -> list[Path]:
+    # Written beside and renamed over, like every table: on Kaggle a figure from a pushed bundle
+    # is restored as a symlink into read-only /kaggle/input, and savefig would write through it.
     paths = []
     for ext in ("pdf", "png"):
         p = out / f"{name}.{ext}"
-        fig.savefig(p, dpi=300, bbox_inches="tight", pad_inches=0.03)
+        tmp = p.with_name(f"{p.name}.tmp")
+        fig.savefig(tmp, format=ext, dpi=300, bbox_inches="tight", pad_inches=0.03)
+        tmp.replace(p)
         paths.append(p)
     import matplotlib.pyplot as plt
 
