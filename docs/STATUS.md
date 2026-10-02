@@ -20,7 +20,7 @@ genuinely unresolved — as opposed to merely unwritten.
 | 5 — Full-pipeline pilot | all | **COMPLETE** | ✅ 240/240 from final implementations; cross-account consistency verified |
 | 6 — Audits | B, C | **COMPLETE** | ✅ 240/240, all six audits, every re-run landed; 9,238 rows |
 | 7 — Calibration & validity | D | **COMPLETE** | ✅ Every audit has a retrain FPR and a canary accuracy; guard, effect floor, twin check; `activation_l2` retired |
-| 8 — Analysis | D | **COMPLETE — final run pending** | RQ1–RQ6, H1–H5 answered; 7 figures; reproduced exactly off-Kaggle |
+| 8 — Analysis | D | **COMPLETE** | ✅ RQ1–RQ6, H1–H5 answered; 7 figures; final Kaggle bundle reproduced 17/17 |
 
 > **Two different stage numberings are in play.** The table above is the *plan's build*
 > stages. `forgetcheck queue --stage N` uses *queue* stages, which are not the same: queue 3 =
@@ -2406,13 +2406,13 @@ notebook 06** (GPU).
 
 | | file | finding |
 |---|---|---|
-| 1 | `fig1_native_validity` | The audits' own rules flag genuine retrains (up to 17/17); calibrated: 2.5% and 4.3% |
+| 1 | `fig1_native_validity` | The audits' own rules flag genuine retrains (up to 17/17); calibrated: 2.4% and 4.2% |
 | 2 | `fig2_canary_degree` | Behaviour, representation and relearning track memory; no MIA does |
 | 3 | `fig3_method_ratios` | Which method looks most retrain-like depends on the audit |
 | 4 | `fig4_agreement_by_condition` | Audits agree at mem-high and invert at the canary |
 | 5 | `fig5_beyond_m0` | Unlearning moves representations farther from retraining than M0 |
 | 6 | `fig6_matrix` | Within-condition τ between every pair of metrics (the plan's disagreement matrix) |
-| 7 | `fig7_h3` | H3, once its data exists |
+| 7 | `fig7_h3` | H3 on the signed scale: within-condition τ +0.64, controlled slope +0.49 |
 
 They follow one visual system: a one-hue sequential scale; blue–gray–red for polarity, a pair
 that passes the CVD and contrast validator; hairline grids; surface gaps between cells rather
@@ -2421,10 +2421,12 @@ the null, so significance is never carried by colour alone. Each figure was rend
 inspected; three title collisions were found and fixed.
 
 The calibrated false-positive rate is quoted on the primary probes:
-- 14/560 = 2.5% at the five-retrain conditions;
-- 11/255 = 4.3% at mem-high.
+- 14/595 = 2.4% at the five-retrain conditions;
+- 11/260 = 4.2% at mem-high.
 
-The first read's 16/595 and 11/284 included the since-retired `activation_l2`.
+Before H3 these were 14/560 (2.5%) and 11/255 (4.3%). `cka_to_original` added its 35 + 5
+retrains and flagged none of them. The first read's 16/595 and 11/284 included the
+since-retired `activation_l2`.
 
 ## H3 RESULT (1 Oct 2026) — supported, and not by method identity
 
@@ -2513,12 +2515,39 @@ Figure 7 is redrawn on the signed scale, with vertical lines at a retrain and at
 list position meant adding a metric shifted every other interval in the second decimal. A test
 pins it.
 
+## STAGE 8 COMPLETE (2 Oct 2026)
+
+The final run of notebook 06 used commit `32a8fbb`, and its bundle is the one the paper cites.
+
+**Provenance.**
+- All 17 analysis tables recompute exactly from the bundle's own calibration tables here,
+  using the CLI's configuration (10,000 resamples, seed 300). Run with the default seed instead,
+  the intervals move by up to 0.05, so the seed is part of the record.
+- The calibration matches the local tables except in two respects:
+  - Storage: None vs NaN in flag columns, with 0 differing values.
+  - `m0_gap_raw` for `js_to_original`: the pipeline now computes it (M0's JS to itself is 0,
+    minus the band mean). It enters only that metric's signed medians, which no reported test
+    uses.
+- `cka_to_original`'s anchor equals the value filled in by hand earlier, to the last digit.
+
+The bundle's tables are now the local copy.
+
+**The second-to-last run** stopped at `figures`. Step 4 had pushed `results/figures/`, so the next
+session restored those figures as symlinks into read-only `/kaggle/input`, and `savefig` wrote
+through them (EROFS). Figures now save beside the target and rename over it, like every table, and
+a test reproduces the case with a linked file. The fix also stops a write-through from altering a
+linked source anywhere. The same commit cleared a pandas FutureWarning (the marked cells are
+unchanged, 72 and 36 of 335) and removed the "[nan, nan]" from the within-condition H3 line.
+
+**Figures.** All seven render on Kaggle's fonts with every glyph (τ, ×, −). Subtitles now wrap to
+the wider of the plot and the title, at balanced line lengths. Figure 2 had left a lone "0." on a
+third line. The figures are rendered from the tables alone, so the local re-render needs no
+Kaggle run.
+
 ### Open
 
-1. **One final run of notebook 06**, so the bundle the paper cites comes from the pipeline end to
-   end (the signed anchor now computed by `calibrate`). It is CPU only if Step 4's push was done
-   last time; otherwise Step 0 recomputes on GPU, which is resumable.
-2. Figure sizes for the paper template, once the venue is known.
+1. Figure sizes for the paper template, once the venue is known.
+2. A results write-up for readers outside the build (to be agreed with the team).
 
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 

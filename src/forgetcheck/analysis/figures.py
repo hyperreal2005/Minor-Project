@@ -128,13 +128,20 @@ def _title(fig, title: str, subtitle: str = "") -> None:
     w_in, h_in = fig.get_size_inches()
     x = box.x0 / w_in
     y = (box.y1 + 0.05) / h_in
+    head = fig.text(x, y, title, transform=fig.transFigure, ha="left", va="bottom",
+                    fontsize=8.5, fontweight="bold", color=INK)
     if subtitle:
-        width = max(40, int(box.width * 15.5))
+        # Wrapped to the wider of the content and the title, then balanced: the fewest lines
+        # that width allows, at the narrowest width that keeps them -- no one-word last line.
+        span = max(box.width, head.get_window_extent(r).width / fig.dpi)
+        width = max(40, int(span * 15.5))
+        n = len(textwrap.wrap(subtitle, width))
+        width = next(w for w in range(len(subtitle) // n, width + 1)
+                     if len(textwrap.wrap(subtitle, w)) <= n)
         t = fig.text(x, y, textwrap.fill(subtitle, width), transform=fig.transFigure,
                      ha="left", va="bottom", fontsize=7, color=INK_2, linespacing=1.3)
         y += (t.get_window_extent(r).height / fig.dpi + 0.03) / h_in
-    fig.text(x, y, title, transform=fig.transFigure, ha="left", va="bottom",
-             fontsize=8.5, fontweight="bold", color=INK)
+        head.set_y(y)
 
 
 # --------------------------------------------------------------------------- the figures
