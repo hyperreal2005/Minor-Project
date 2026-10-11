@@ -133,6 +133,35 @@ calibration:
   # models between are three at mem-low (neggradplus 7.4, scrub 7.8 at worst) -- so any value
   # from 3.8 to 7.4 classifies every model identically.
   utility_guard_pp: 5.0
+  # Records written before the fix they depend on are REJECTED by `calibrate`, never used: the
+  # retrains and M0 were audited with the fixed code, so a stale row would be compared across two
+  # protocols. Found 3 Oct 2026: the forgetcheck-stage6 version every later stage read had lost
+  # Stage 6's 20 Sep afternoon re-runs. The 30 unlearned canary models' privacy rows were the
+  # true-label first pass (population AUC 0.67-0.85 where the re-run had read 0.94-0.96;
+  # neggrad's RMIA 0.48, not 0.896), and rand-5000's SDE rows still carried the sample-size
+  # artefact (margin +0.50 on every healthy model). Both reached Stages 7 and 8 unnoticed.
+  # `since` is the fix commit's time in UTC; `calibrate` names stale rows and the re-run command.
+  valid_from:
+    - audit: privacy_population
+      forget: canary-500
+      since: "2026-09-20T07:51:05Z"
+      commit: da87c08
+      why: outputs cache keyed on label scheme; before it canary privacy ran on the true labels
+    - audit: privacy_rmia
+      forget: canary-500
+      since: "2026-09-20T07:51:05Z"
+      commit: da87c08
+      why: outputs cache keyed on label scheme; before it canary privacy ran on the true labels
+    - audit: relearning
+      forget: canary-500
+      since: "2026-09-17T16:16:57Z"
+      commit: 95b0a10
+      why: relearning reintroduces the canary labels the models were trained on
+    - audit: sde
+      forget: rand-5000
+      since: "2026-09-17T16:16:57Z"
+      commit: 95b0a10
+      why: target and reference subsets cut to one common size (the +0.50 margin artefact)
 
 agreement:
   # The unit of analysis is the model instance, not the method. Ranking six methods and

@@ -736,9 +736,18 @@ print(f"staged {len(shards)} audit shards, {n_out} cached output files, {mb:.0f}
 if not shards:
     raise SystemExit("no audit records to upload; did the audit cell run?")
 
+# ONE dataset for the whole team, named in full rather than a placeholder to fill in.
+#
+# Two checks, both learned the hard way:
+# * BEFORE: the Input panel shows forgetcheck-stage6 at its LATEST version. A version is a full
+#   snapshot of what the session restored, so a push from an older one deletes newer work.
+# * AFTER: the dataset page's History lists the new version. Stage 6's 20 Sep afternoon re-runs
+#   were "saved" in a session whose push never created a version, and Stages 7 and 8 ran
+#   without them (found 3 Oct 2026; `calibrate` now rejects records older than the fix they
+#   depend on, and writes a provenance table that shows when every audit's records were made).
 (OUT / "dataset-metadata.json").write_text(json.dumps({
     "title": "forgetcheck-stage6",
-    "id": "YOUR-KAGGLE-USERNAME/forgetcheck-stage6",   # <-- records + cached outputs, ~2 GB
+    "id": "pranitdeepsingh/forgetcheck-stage6",   # records + cached outputs, ~2 GB
     "licenses": [{"name": "CC0-1.0"}],
 }, indent=2))
 # First time:   !kaggle datasets create  -p /kaggle/working/to_upload --dir-mode zip

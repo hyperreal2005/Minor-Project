@@ -449,11 +449,31 @@ def cmd_calibrate(args) -> int:
     import pandas as pd
 
     from .calibrate import CalibrationConfig, calibrate, load_audit_records, write_tables
-    from .calibrate.report import recover_training_metrics
+    from .calibrate.report import recover_training_metrics, reject_stale
     from .registry.metrics import default_registry
 
     ctx = _ctx(args)
     df = load_audit_records(ctx.records_dir)
+
+    # Records older than the fix they depend on are rejected before anything is computed from
+    # them (configs/audits.yaml, calibration.valid_from). Lines start "records:" so notebook 06's
+    # filtered output shows them.
+    rules = (ctx.audits.get("calibration") or {}).get("valid_from") or []
+    df, stale = reject_stale(df, rules)
+    if len(stale):
+        print(f"records: !! {int(stale['rows'].sum())} STALE rows rejected -- written before "
+              "the fix they depend on:")
+        for r in stale.itertuples():
+            print(f"records: !!   {r.audit} @ {r.forget_id} ({r.role}): {r.rows} rows, "
+                  f"{r.models} models, newest {r.newest}; needs >= {r.since} ({r.commit})")
+        print("records: !! re-run them, push, then calibrate again:")
+        for (forget, role), g in stale.groupby(["forget_id", "role"], sort=True):
+            where = "" if forget == "*" else f" --forget {forget}"
+            who = "" if role == "unlearn" else f" --role {role}"
+            print(f"records: !!   forgetcheck audit --audits {','.join(sorted(set(g['audit'])))}"
+                  f"{where}{who} --force")
+    else:
+        print(f"records: none predate the fixes they depend on ({len(rules)} rules checked)")
 
     # The utility guard and the relearning check need each model's training-time test and
     # forget accuracy. Stages 3-5 recorded them as shards AND in every checkpoint's metadata
@@ -475,7 +495,8 @@ def cmd_calibrate(args) -> int:
         extra, n = recover_training_metrics(df, store)
         if n:
             df = pd.concat([df, extra], ignore_index=True)
-            print(f"   test/forget accuracy recovered from checkpoint metadata for {n} models")
+            print(f"   test/retain/forget accuracy recovered from checkpoint metadata for {n} "
+                  "models")
     audited = set(df.loc[df["audit"] != "meta", "run_id"])
     with_acc = audited & set(df.loc[df["metric"] == "test_acc", "run_id"])
     print(f"   training-time accuracy available for {len(with_acc)} of {len(audited)} audited "
@@ -486,6 +507,7 @@ def cmd_calibrate(args) -> int:
               "(stages 3-5) and re-run the setup cells\n")
 
     tables = calibrate(df, registry=default_registry(), config=CalibrationConfig.from_context(ctx))
+    tables["stale"] = stale
     out = ctx.records_dir.parent / "calibration"
     for path in write_tables(tables, out):
         n = len(tables[path.stem])

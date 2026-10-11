@@ -18,9 +18,9 @@ genuinely unresolved — as opposed to merely unwritten.
 | 3 — Base models & oracles | A | **DONE, EXECUTED** | ✅ 62/62 trained on Kaggle; seed-SD gate passes |
 | 4 — Unlearning methods | A, B | **DONE** | Six methods + SSD behind one interface |
 | 5 — Full-pipeline pilot | all | **COMPLETE** | ✅ 240/240 from final implementations; cross-account consistency verified |
-| 6 — Audits | B, C | **COMPLETE** | ✅ 240/240, all six audits, every re-run landed; 9,238 rows |
+| 6 — Audits | B, C | **COMPLETE — two cells to re-run** | 240/240, all six audits; the 20 Sep afternoon re-runs (canary privacy, rand-5000 SDE, relearning) are missing from the dataset version later stages read (3 Oct) |
 | 7 — Calibration & validity | D | **COMPLETE** | ✅ Every audit has a retrain FPR and a canary accuracy; guard, effect floor, twin check; `activation_l2` retired |
-| 8 — Analysis | D | **COMPLETE** | ✅ RQ1–RQ6, H1–H5 answered; 7 figures; final Kaggle bundle reproduced 17/17 |
+| 8 — Analysis | D | **RE-RUN PENDING** | Built and reproduced 17/17, but its canary privacy inputs were stale; re-audit two cells, then calibrate + analyse again |
 
 > **Two different stage numberings are in play.** The table above is the *plan's build*
 > stages. `forgetcheck queue --stage N` uses *queue* stages, which are not the same: queue 3 =
@@ -2457,8 +2457,9 @@ flagged (0/5 at every condition).
 **By layer**, unlearned models stay closest to M0 early (layer1 0.99) and diverge late
 (layer4 0.95).
 
-**Farther from M0 than a retrain is:** 20–50% of models per condition, and per method 47% of
-NegGrad+ and 50% of SalUn.
+**Farther from M0 than a retrain is** (below the retrain band's mean): none at canary,
+16–24% at the other conditions, 50% at mem-low; per method 47% of NegGrad+ and 50% of SalUn.
+(Corrected 3 Oct: this line first said "20–50% per condition".)
 
 **Canary validity by degree:** `cka_to_original` tracks memory at **+0.55 [0.24, 0.77]**, second
 only to `js_to_original`. The two M0-referenced measures track memory best.
@@ -2544,10 +2545,126 @@ the wider of the plot and the title, at balanced line lengths. Figure 2 had left
 third line. The figures are rendered from the tables alone, so the local re-render needs no
 Kaggle run.
 
+## STALE STAGE 6 ROWS IN THE FINAL BUNDLE — found 3 Oct 2026, re-run pending
+
+Found while extracting the results write-up's tables. Some unlearned models' Stage 6 records in
+the bundle do not match what STATUS recorded after Stage 6's last re-runs. They match the values
+recorded *before* those re-runs:
+
+| cell | in the bundle | before the re-run (17–20 Sep morning) | after it (20 Sep afternoon session) |
+|---|---|---|---|
+| canary, population AUC, healthy methods | 0.67–0.85 | 0.67–0.85 | 0.94–0.96 |
+| canary, `neggrad` RMIA AUC | 0.48 | 0.48 | 0.896 |
+| rand-5000, `sde_margin`, healthy models | +0.48 to +0.56 | ≈ +0.50 (the size artefact) | −0.005 to +0.024 |
+| rand-500, `relearn_norm` | defined, down to −51.6 | defined (no guard yet) | undefined (guard) |
+
+Canary *relearning* is the corrected version (`neggrad` −0.84, l1sparse 0.283), so the 18 Sep
+canary re-audit (20 Sep morning) landed, and the afternoon session did not. The loader keeps the
+newest row for each measurement, so the afternoon's rows were never in the records directory.
+
+**Verified against the 20 Sep check table** (11 Oct). That session's own check cell
+covers 6 metrics × 6 methods × 8 conditions, 288 cells. It was pasted at 12:56 UTC: "ran the whole
+thing and saved it to the dataset". Comparing it with the bundle:
+- **257 of the 288 cells match to the third decimal.**
+- **The 31 that differ are exactly the cells that session rewrote:**
+  - canary privacy: 12;
+  - rand-5000 `sde_margin`: 6;
+  - `relearn_norm`, from its relearning re-run: 13. Six of these are rand-500, defined before the
+    re-run and undefined after it; the rest are small `neggrad` differences.
+
+Stages 7 and 8 therefore read the dataset *as it was before that session*, complete in every
+other respect.
+
+**Cause, verified against the dataset's version history (11 Oct): the afternoon save created no
+version.** Two earlier guesses here were wrong and are retracted: another team account (every
+run was on `pranitdeepsingh`), and version pinning. `forgetcheck-stage6`'s history:
+
+| version | message | created |
+|---|---|---|
+| 1 | Initial release | ~16 Sep |
+| 2, 3 | stage 6 account 1 | ~16–17 Sep |
+| 4 | stage 6 account 2 | ~17 Sep |
+| 5 | stage 6 account 3 | ~18 Sep |
+| 6 | stage 6 account 1 canary 500 rerun | **20 Sep, the only version that day** |
+| 7 | stage 7 calibration | ~27 Sep |
+| 8 | stage 8 H3 | ~1 Oct |
+
+There were two saves on 20 Sep:
+- **The morning save**, after the canary all-six re-run, whose privacy rows were still on the true
+  labels because of the cache-key bug fixed that morning. This is version 6: the bundle holds that
+  run's canary relearning (`neggrad` −0.840, where the afternoon's re-run gave −0.837).
+- **The afternoon save**, "ran the whole thing and saved it to the dataset". This is the session
+  with every fix (the table above). It appears in no version. The likely cause is that the session
+  ended without the dataset push completing; what failed is not knowable now.
+
+Versions 7 and 8 were built on version 6, correctly. The file counts agree: the Stage 7 calibrate
+session saw 1,401 record files, which is version 6 plus about 600 Stage 7 audit files.
+
+**The lesson:** after any push, check that the dataset's History lists the new version before
+ending the session.
+
+### What it breaks, and what it does not
+
+- **Canary privacy (the 30 unlearned canary models, both attacks).** These rows were scored on
+  the *true* labels; the retrains and M0 were audited in Stage 7 on the *canary* labels. Every
+  calibrated canary privacy verdict, and every Stage 8 number that uses canary privacy, compares
+  two protocols:
+  - the MIA rows of RQ6 by degree, and so Figure 2's title claim;
+  - the canary column of every privacy pair (behaviour vs privacy −0.73/−0.71, population vs
+    RMIA +0.82, privacy vs relearning −0.77/−0.71), and so the pooled and within τ of those
+    pairs, agreement at canary (−0.12), and H4's second half;
+  - H2b at canary, RQ4's 18 of 18 at canary, the privacy mixed models' canary terms and their
+    method ratios, and Figures 3–6 where they show privacy.
+  All of these must be re-read after the re-run.
+- **rand-5000 SDE.** It enters only the full matrix's SDE rows. SDE is unranked.
+- **Not affected:**
+  - every other condition's privacy rows;
+  - behaviour, representation and relearning everywhere;
+  - H3 (`cka_to_original` against `relearn_auc`);
+  - RQ1's behaviour, representation and relearning verdicts;
+  - the native-rule and calibrated-FPR tables (retrains and M0 only);
+  - the canary ground truth.
+- **rand-500 relearning** is the first pass. `relearn_auc` is the same protocol and stands, and
+  is marked at rand-500 anyway. `relearn_norm` there is defined in the records but has no band,
+  so it enters nothing.
+
+### The guard (now in `calibrate`)
+
+`calibration.valid_from` in `configs/audits.yaml` lists, per audit and condition, the fix commit
+each row depends on: `da87c08` (20 Sep, outputs cache keyed on label scheme) for canary privacy,
+and `95b0a10` (17 Sep, canary labels; SDE subsets at one common size) for canary relearning and
+rand-5000 SDE. Records written before the fix are **rejected**, never used.
+- `calibrate` prints the rejected rows on `records:` lines (so notebook 06's filtered output
+  shows them), with the exact re-run command, and writes `stale.parquet`.
+- On the current records it should reject the unlearned canary models' privacy rows and
+  rand-5000's SDE rows: they date from 17-18 Sep, before their fixes. The next run's output
+  confirms this. Tests reproduce the failure end to end.
+
+Two more tables now come out of `calibrate`:
+- **`provenance`:** per role, condition and audit, the first and last write time and the
+  commits. A lost upload now shows as a date before its fix.
+- **`training`:** every model's training-time test, retain and forget accuracy, recovered
+  from checkpoint metadata. The results write-up needs the per-method forget accuracy, which
+  was never tabulated.
+
+### The re-run (one GPU session on the account that owns `forgetcheck-stage6`)
+
+```
+forgetcheck --root . --device cuda audit --audits privacy_population,privacy_rmia --forget canary-500 --force
+forgetcheck --root . --device cuda audit --audits sde --forget rand-5000 --force
+```
+
+Then calibrate, analyse, figures, and push to `pranitdeepsingh/forgetcheck-stage6` with its
+latest version attached. The checks that it landed:
+- `records: none predate the fixes`;
+- in `provenance`, canary privacy and rand-5000 SDE dated October;
+- **version 9 in the dataset's History**.
+
 ### Open
 
-1. Figure sizes for the paper template, once the venue is known.
-2. A results write-up for readers outside the build (to be agreed with the team).
+1. **The re-run above**, then re-read every canary privacy result. The results write-up waits on
+   it.
+2. Figure sizes for the paper template, once the venue is known.
 
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 

@@ -158,7 +158,9 @@ def records_dir(tmp_path_factory):
     rec = root / "results" / "records"
     rec.mkdir(parents=True)
     rng = np.random.default_rng(0)
-    early, late = "2026-09-20T00:00:00", "2026-09-26T00:00:00"
+    # After every Stage 6 fix (configs/audits.yaml, calibration.valid_from), as the real records
+    # must be; the stale case is built separately below.
+    early, late = "2026-09-21T00:00:00", "2026-09-26T00:00:00"
 
     full = {"forget_id": "full", "forget_kind": "none", "forget_size": 0}
     for s in SEEDS:  # the clean M0s' Stage 3 rows, recorded once under forget_id "full"
@@ -750,3 +752,150 @@ def test_a_new_metric_does_not_move_other_metrics_canary_intervals(tables, tmp_p
     common = fewer.index
     pd.testing.assert_frame_equal(full.loc[common, ["tau_lo", "tau_hi"]],
                                   fewer.loc[common, ["tau_lo", "tau_hi"]])
+
+
+class TestStaleRecords:
+    """3 Oct 2026: the dataset version Stages 7 and 8 read had lost Stage 6's 20 Sep re-runs.
+    The unlearned canary models' privacy rows were the true-label first pass, compared against
+    retrains and M0 audited on the canary labels, and nothing said so. Rows older than the fix
+    they depend on are now rejected, named, and given the command that recomputes them."""
+
+    RULES = [{"audit": "privacy_population", "forget": "canary-500",
+              "since": "2026-09-20T07:51:05Z", "commit": "da87c08", "why": "label scheme"},
+             {"audit": "sde", "forget": "*", "since": "2026-09-17T16:16:57Z", "commit": "95b0a10",
+              "why": "common size"}]
+
+    def _frame(self):
+        import pandas as pd
+
+        rows = []
+        for i, (audit, cond, role, ts) in enumerate([
+            ("privacy_population", "canary-500", "unlearn", "2026-09-18T10:00:00+00:00"),  # stale
+            ("privacy_population", "canary-500", "unlearn", "2026-09-20T08:00:00+00:00"),  # fresh
+            ("privacy_population", "canary-500", "oracle", "2026-09-19T00:00:00+00:00"),   # stale
+            ("privacy_population", "rand-500", "unlearn", "2026-09-17T00:00:00+00:00"),    # no rule
+            ("sde", "rand-5000", "unlearn", "2026-09-17T12:00:00+00:00"),                  # stale
+            ("sde", "mem-high-3000", "unlearn", "not a time"),                             # unreadable
+            ("behavior", "canary-500", "unlearn", "2026-09-01T00:00:00+00:00"),            # no rule
+        ]):
+            rows.append({"run_id": f"m{i}", "forget_id": cond, "audit": audit, "role": role,
+                         "metric": "x", "probe_set": "forget", "value": 0.5, "timestamp": ts})
+        return pd.DataFrame(rows)
+
+    def test_rows_before_the_fix_are_rejected_and_named(self):
+        from forgetcheck.calibrate.report import reject_stale
+
+        kept, stale = reject_stale(self._frame(), self.RULES)
+        assert sorted(kept["run_id"]) == ["m1", "m3", "m6"]
+        got = {(r.audit, r.forget_id, r.role): (r.rows, r.rerun) for r in stale.itertuples()}
+        assert got == {
+            ("privacy_population", "canary-500", "oracle"):
+                (1, "forgetcheck audit --audits privacy_population --forget canary-500 "
+                    "--role oracle --force"),
+            ("privacy_population", "canary-500", "unlearn"):
+                (1, "forgetcheck audit --audits privacy_population --forget canary-500 --force"),
+            ("sde", "*", "unlearn"): (2, "forgetcheck audit --audits sde --force"),
+        }
+
+    def test_no_rules_or_no_rows_reject_nothing(self):
+        from forgetcheck.calibrate.report import reject_stale
+
+        df = self._frame()
+        kept, stale = reject_stale(df, [])
+        assert len(kept) == len(df) and stale.empty
+        kept, stale = reject_stale(df.iloc[:0], self.RULES)
+        assert kept.empty and stale.empty
+
+    def test_the_registered_rules_parse_and_name_real_audits(self):
+        import pandas as pd
+
+        from forgetcheck.audits import audit_names
+        from forgetcheck.config import find_configs
+
+        cal = yaml.safe_load((find_configs() / "audits.yaml").read_text(encoding="utf-8"))
+        rules = cal["calibration"]["valid_from"]
+        assert {(r["audit"], r["forget"]) for r in rules} >= {
+            ("privacy_population", "canary-500"), ("privacy_rmia", "canary-500"),
+            ("sde", "rand-5000")}
+        for r in rules:
+            assert r["audit"] in audit_names() and r["commit"] and r["why"]
+            assert pd.Timestamp(r["since"]).tzinfo is not None
+
+    def _calibrate(self, rec, monkeypatch):
+        from forgetcheck import cli
+        from forgetcheck.config import find_configs
+
+        class Ctx:
+            pass
+
+        ctx = Ctx()
+        ctx.records_dir, ctx.primary_condition = rec, PRIMARY
+        ctx.audits = yaml.safe_load((find_configs() / "audits.yaml").read_text(encoding="utf-8"))
+        monkeypatch.setattr(cli, "_ctx", lambda args: ctx)
+        assert cli.cmd_calibrate(cli.build_parser().parse_args(["calibrate"])) == 0
+
+    def _copy(self, records_dir, tmp_path):
+        import shutil
+
+        rec = tmp_path / "results" / "records"
+        rec.mkdir(parents=True)
+        for p in records_dir.glob("*.parquet"):
+            shutil.copy2(p, rec / p.name)
+        return rec
+
+    def test_the_lost_canary_rerun_is_caught_end_to_end(self, records_dir, tmp_path,
+                                                        monkeypatch, capsys):
+        """The real failure: canary privacy rows for the unlearned models written before the
+        label-scheme fix, everything else current. They must not reach the flags."""
+        import pandas as pd
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        rec = self._copy(records_dir, tmp_path)
+        n_back = 0
+        for p in rec.glob("c10r18__unlearn__canary-500__*--audit.parquet"):
+            schema = pq.read_schema(p)
+            t = pq.read_table(p).to_pandas()
+            old = t["audit"].isin(["privacy_population", "privacy_rmia"])
+            t.loc[old, "timestamp"] = "2026-09-18T09:00:00+00:00"
+            n_back += int(old.sum())
+            pq.write_table(pa.Table.from_pandas(t, schema=schema, preserve_index=False), p)
+        assert n_back == len(METHODS) * len(SEEDS) * 6  # 3 metrics x 2 attacks per model
+
+        self._calibrate(rec, monkeypatch)
+        out = capsys.readouterr().out
+        assert f"records: !! {n_back} STALE rows rejected" in out
+        assert ("records: !!   forgetcheck audit --audits privacy_population,privacy_rmia "
+                "--forget canary-500 --force") in out
+
+        cal = tmp_path / "results" / "calibration"
+        f = pd.read_parquet(cal / "flags.parquet")
+        canary_privacy = f[(f["forget_id"] == "canary-500")
+                           & f["audit"].isin(["privacy_population", "privacy_rmia"])]
+        assert canary_privacy.empty
+        assert len(pd.read_parquet(cal / "stale.parquet")) == 2  # one row per audit, unlearn role
+
+    def test_current_records_pass_and_the_new_tables_are_written(self, records_dir, tmp_path,
+                                                                 monkeypatch, capsys):
+        import pandas as pd
+
+        rec = self._copy(records_dir, tmp_path)
+        self._calibrate(rec, monkeypatch)
+        out = capsys.readouterr().out
+        assert "records: none predate the fixes they depend on (4 rules checked)" in out
+        cal = tmp_path / "results" / "calibration"
+        assert pd.read_parquet(cal / "stale.parquet").empty
+        prov = pd.read_parquet(cal / "provenance.parquet").set_index(["role", "forget_id", "audit"])
+        row = prov.loc[("unlearn", "canary-500", "privacy_population")]
+        assert row["models"] == len(METHODS) * len(SEEDS) and row["last"].startswith("2026-09-21")
+
+
+def test_the_training_table_carries_every_models_accuracy(tables):
+    t = tables["training"]
+    un = t[t["role"] == "unlearn"]
+    assert len(un) == len(CONDITIONS) * len(METHODS) * len(SEEDS)
+    assert un[["test_acc", "forget_acc"]].notna().all().all()
+    orc = t[t["role"] == "oracle"]
+    assert orc["forget_acc"].notna().all() and (orc["oracle_seed"].notna().sum() == 12)
+    base = t[t["role"] == "base"]
+    assert set(base["forget_id"]) == {"full", "canary-500"} and base["forget_acc"].isna().all()

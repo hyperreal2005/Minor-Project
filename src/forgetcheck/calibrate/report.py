@@ -24,6 +24,11 @@ Outputs, all Parquet under ``results/calibration/``:
 ``utility``         per model and condition: test accuracy against the retrain mean.
 ``relearning_vs_accuracy``  per condition: does relearning flag anything the starting
                     accuracy does not?
+``training``        per model: training-time test, retain and forget accuracy (Stages 3 and 5).
+``provenance``      per (role, condition, audit): when, and by which commit, the records the
+                    tables were built from were written.
+``stale``           (written by the command) records rejected for predating the fix they
+                    depend on, with the command that recomputes them.
 
 Per condition throughout, with the *n* stated -- seven conditions rest on five retrains, and
 suppressing them would erase the difficulty axis the project is partly about.
@@ -40,8 +45,8 @@ from .bands import (MIN_BAND_N, Band, clopper_pearson, coverage_for, flag, loo_f
                     prediction_band)
 from .native import native_flag, native_rule_for
 
-__all__ = ["CalibrationConfig", "calibrate", "load_audit_records", "recover_training_metrics",
-           "write_tables"]
+__all__ = ["CalibrationConfig", "calibrate", "load_audit_records", "provenance_table",
+           "recover_training_metrics", "reject_stale", "training_table", "write_tables"]
 
 #: Metrics that are verdicts, not measurements. A normal band over {0, 1} is meaningless; these
 #: are scored by their native rule only.
@@ -135,8 +140,108 @@ def load_audit_records(records_dir):
     return df.reset_index(drop=True)
 
 
-#: The training-time measurements the utility guard and the relearning check read.
-TRAINING_METRICS = (("test_acc", "test"), ("forget_acc", "forget"))
+STALE_COLUMNS = ["audit", "forget_id", "role", "rows", "models", "newest", "since", "commit",
+                 "why", "rerun"]
+
+
+def reject_stale(df, rules):
+    """Split off records written before the fix they depend on. Returns ``(kept, stale)``.
+
+    Each rule is ``{audit, forget ('*' for every condition), since (UTC), commit, why}``. A row
+    the rule covers whose timestamp is earlier than ``since``, or unreadable, was computed by code
+    the fix has since corrected. Comparing it with rows from the fixed code -- the retrains and
+    M0 were audited later -- compares two protocols, so it is rejected, never used.
+
+    Why this exists: the dataset version every later stage read had lost Stage 6's 20 Sep
+    afternoon re-runs: that session's push never created a dataset version. The 30 unlearned canary models' privacy rows were still the true-label first pass
+    and rand-5000's SDE rows still carried the sample-size artefact, and both went through
+    Stages 7 and 8 without a sound. ``stale`` has one row per (rule, role), with the command that
+    recomputes it.
+    """
+    import pandas as pd
+
+    if not rules or not len(df):
+        return df, pd.DataFrame(columns=STALE_COLUMNS)
+    raw = df["timestamp"] if "timestamp" in df else pd.Series(pd.NA, index=df.index)
+    ts = pd.to_datetime(raw, utc=True, errors="coerce", format="ISO8601")  # unreadable -> stale
+    stale = pd.Series(False, index=df.index)
+    report = []
+    for rule in rules:
+        since = pd.Timestamp(rule["since"])
+        since = since.tz_localize("UTC") if since.tzinfo is None else since.tz_convert("UTC")
+        forget = rule.get("forget", "*")
+        hit = df["audit"] == rule["audit"]
+        if forget != "*":
+            hit &= df["forget_id"] == forget
+        old = hit & (ts.isna() | (ts < since))
+        stale |= old
+        for role, g in df[old].groupby("role", sort=True):
+            where = "" if forget == "*" else f" --forget {forget}"
+            who = "" if role == "unlearn" else f" --role {role}"
+            report.append({
+                "audit": rule["audit"], "forget_id": forget, "role": role, "rows": len(g),
+                "models": g["run_id"].nunique(), "newest": str(ts[g.index].max())[:19],
+                "since": str(since)[:19], "commit": str(rule.get("commit", "")),
+                "why": " ".join(str(rule.get("why", "")).split()),
+                "rerun": f"forgetcheck audit --audits {rule['audit']}{where}{who} --force",
+            })
+    return df[~stale].reset_index(drop=True), pd.DataFrame(report, columns=STALE_COLUMNS)
+
+
+def provenance_table(df):
+    """When, and by which commit, each (role, condition, audit)'s records were written.
+
+    The tables are only as current as the records under them, and a lost dataset upload is
+    invisible in the numbers themselves. This makes it visible: a re-run that did not land shows
+    as a date before its fix.
+    """
+    import pandas as pd
+
+    cols = ["role", "forget_id", "audit", "models", "rows", "first", "last", "commits"]
+    a = df[df["audit"] != "meta"]
+    if not len(a):
+        return pd.DataFrame(columns=cols)
+    ts = a["timestamp"] if "timestamp" in a else pd.Series(pd.NA, index=a.index)
+    commit = a["git_commit"] if "git_commit" in a else pd.Series("", index=a.index)
+    a = a.assign(_ts=pd.to_datetime(ts, utc=True, errors="coerce", format="ISO8601"),
+                 _commit=commit.fillna("").astype(str).str[:7])
+    rows = []
+    for (role, cond, audit), g in a.groupby(["role", "forget_id", "audit"], sort=True):
+        rows.append({"role": role, "forget_id": cond, "audit": audit,
+                     "models": g["run_id"].nunique(), "rows": len(g),
+                     "first": str(g["_ts"].min())[:19], "last": str(g["_ts"].max())[:19],
+                     "commits": ", ".join(sorted({c for c in g["_commit"] if c}))})
+    return pd.DataFrame(rows, columns=cols)
+
+
+#: The training-time measurements the utility guard, the relearning check and the `training`
+#: table read. retain_acc is read by the table only.
+TRAINING_METRICS = (("test_acc", "test"), ("retain_acc", "retain"), ("forget_acc", "forget"))
+
+
+def training_table(df):
+    """Each model's training-time accuracy, as Stage 3 (M0, retrains) or Stage 5 (unlearned
+    models) measured it: one row per model and condition, test / retain / forget accuracy.
+    A clean M0 has no forget set and is recorded once, under ``forget_id`` "full"."""
+    import pandas as pd
+
+    names = [m for m, _ in TRAINING_METRICS]
+    ids = ["role", "method", "train_seed", "oracle_seed"]
+    m = df[(df["audit"] == "meta") & df["metric"].isin(names)]
+    if not len(m):
+        return pd.DataFrame(columns=["run_id", "forget_id", *ids, *names])
+    m = m.assign(**{c: pd.NA for c in ids if c not in m})
+    if "timestamp" in m:
+        m = m.sort_values("timestamp")
+    m = m.drop_duplicates(["run_id", "forget_id", "metric"], keep="last")
+    values = m.pivot(index=["run_id", "forget_id"], columns="metric", values="value")
+    keys = m.drop_duplicates(["run_id", "forget_id"]).set_index(["run_id", "forget_id"])[ids]
+    out = keys.join(values).reset_index()
+    for name in names:
+        if name not in out:
+            out[name] = np.nan
+    return out[["run_id", "forget_id", *ids, *names]].sort_values(["role", "forget_id", "run_id"],
+                                                                  ignore_index=True)
 
 
 def recover_training_metrics(df, store):
@@ -181,7 +286,9 @@ def recover_training_metrics(df, store):
             v = final.get(metric)
             if not isinstance(v, (int, float)) or isinstance(v, bool) or v != v:
                 continue
-            n = int(fields["forget_size"]) if probe == "forget" else 10_000  # CIFAR-10 test set
+            # CIFAR-10: 10,000 test images; the retain set is the 50,000 less the forget set.
+            n = {"forget": int(fields["forget_size"]), "test": 10_000,
+                 "retain": 50_000 - int(fields["forget_size"])}[probe]
             rows.append(make_record(run_id=rid, audit="meta", metric=metric, probe_set=probe,
                                     value=float(v), n_probe=n, **provenance, **fields))
             models.add(rid)
@@ -355,6 +462,8 @@ def calibrate(df, *, registry, config: CalibrationConfig) -> dict:
         "relearning_protocol": _relearning_protocol(df),
         "utility": utility,
         "relearning_vs_accuracy": _relearning_vs_accuracy(df, damaged, config),
+        "training": training_table(df),
+        "provenance": provenance_table(df),
     }
 
 
