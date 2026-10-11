@@ -899,3 +899,46 @@ def test_the_training_table_carries_every_models_accuracy(tables):
     assert orc["forget_acc"].notna().all() and (orc["oracle_seed"].notna().sum() == 12)
     base = t[t["role"] == "base"]
     assert set(base["forget_id"]) == {"full", "canary-500"} and base["forget_acc"].isna().all()
+
+
+def test_figure_titles_state_only_what_their_data_shows(tmp_path, monkeypatch):
+    """Figures 2 and 4 once hard-coded their findings; corrected data (11 Oct 2026) left both
+    titles stating the opposite of what they plotted. Titles are computed now: feed each figure
+    data pointing one way, then the other, and the claim must follow."""
+    import pandas as pd
+
+    from forgetcheck.analysis import figures
+    from forgetcheck.registry.metrics import default_registry
+
+    said = []
+    monkeypatch.setattr(figures, "_title", lambda fig, title, subtitle="": said.append(title))
+    monkeypatch.setattr(figures, "_save", lambda fig, out, name: [])
+    reg = default_registry()
+
+    def canary(sign):
+        rows = [("mia_auc_rmia", 0.7), ("js_to_oracle", 0.3), ("cka_linear", 0.2)]
+        return pd.DataFrame([{"metric": m, "n": 25, "tau": sign * t, "p": 0.01,
+                              "tau_lo": sign * t - 0.1, "tau_hi": sign * t + 0.1}
+                             for m, t in rows])
+
+    figures.fig_canary_degree(canary(+1), reg, tmp_path)
+    figures.fig_canary_degree(canary(-1), reg, tmp_path)
+    assert said[0] == "3 of 3 audit metrics track how much a model remembers; RMIA most closely"
+    assert said[1].startswith("0 of 3 audit metrics track") and "3 rank it backwards" in said[1]
+
+    def corr(canary_tau):
+        rows = []
+        for pair in ("behavior vs privacy_weak", "privacy_weak vs privacy_strong"):
+            for scope, t in (("canary-500", canary_tau), ("mem-high-3000", 0.4),
+                             ("rand-3000", 0.1)):
+                rows.append({"pair": pair, "scope": scope, "tau": t, "tau_lo": t - 0.2,
+                             "tau_hi": t + 0.2})
+        return pd.DataFrame(rows)
+
+    said.clear()
+    figures.fig_agreement_by_condition(corr(-0.5), tmp_path)
+    figures.fig_agreement_by_condition(corr(0.8), tmp_path)
+    assert said[0] == ("Audit families agree most at mem-high (mean τ +0.40) and least at "
+                       "canary (-0.50)")
+    assert said[1] == ("Audit families agree most at canary (mean τ +0.80) and least at "
+                       "rand-3000 (+0.10)")

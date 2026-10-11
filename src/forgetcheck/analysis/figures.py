@@ -191,7 +191,12 @@ def fig_native_validity(validity, out: Path) -> list[Path]:
     cb.outline.set_visible(False)
     cb.ax.tick_params(length=0, labelsize=6.5)
     cb.set_label("share of genuine retrains flagged", fontsize=6.5, color=INK_2)
-    _title(fig, "The audits' own decision rules flag genuine retrains",
+    # Every title that states a finding computes it from the data it sits on. The first versions
+    # of Figures 2 and 4 hard-coded theirs, and a correction to the data (3-11 Oct 2026) left
+    # both stating the opposite of what they plotted.
+    broken = np.nanmax(np.asarray(vals, dtype=float)) > 0.2 if len(vals) else False
+    _title(fig, "The audits' own decision rules flag genuine retrains" if broken
+           else "The audits' own decision rules hold on genuine retrains",
            f"Retrains never saw the forget set, so a valid rule flags about 5%. Calibrated "
            f"against the retrains instead, every audit together flags {k1 / n1:.1%} of them at "
            f"the five-retrain conditions ({int(k1)}/{int(n1)}) and {k2 / n2:.1%} at mem-high "
@@ -225,8 +230,14 @@ def fig_canary_degree(cc, registry, out: Path) -> list[Path]:
     ax.set_xlabel("Kendall tau between the audit's G and measured canary memory")
     ax.spines["left"].set_visible(False)
     ax.tick_params(axis="y", length=0)
-    _title(fig, "Behaviour, representation and relearning track memory; membership "
-                "inference does not",
+    tracked = int((d["tau_lo"] > 0).sum())
+    backwards = int((d["tau_hi"] < 0).sum())
+    top = int(d["tau"].idxmax())
+    claim = (f"{tracked} of {len(d)} audit metrics track how much a model remembers; "
+             f"{fam[top]} most closely")
+    if backwards:
+        claim += f"; {backwards} rank it backwards"
+    _title(fig, claim,
            f"Healthy canary models (n = {int(d['n'].max())}: 5 methods x 5 seeds, so mostly an "
            "ordering of methods). Bars: 95% bootstrap interval; hollow: it crosses 0.")
     return _save(fig, out, "fig2_canary_degree")
@@ -273,7 +284,14 @@ def fig_method_ratios(me, out: Path) -> list[Path]:
     axes[0].set_ylim(len(methods) - 0.5, -0.5)
     fig.supxlabel("distance from the retrains, relative to fine-tune (log G ratio)",
                   fontsize=7, color=INK_2, y=-0.06)
-    _title(fig, "Which method looks most like a retrain depends on the audit",
+    nearest = set()  # per family, the method nearest a retrain; fine-tune sits at x1
+    for fam in fams:
+        part = m[m["metric"] == PRIMARY[fam]]
+        ratios = dict(zip(part["term"].str.split(": ", n=1).str[1], part["coef"]))
+        ratios["finetune"] = 0.0
+        nearest.add(min(ratios, key=ratios.get))
+    _title(fig, "Which method looks most like a retrain depends on the audit" if len(nearest) > 1
+           else f"{nearest.pop()} looks most like a retrain on every audit",
            "log G ~ method + condition + (1 | seed); left of x1 = nearer a retrain than "
            "fine-tune. Bars: 95% CI; hollow: it crosses x1.")
     return _save(fig, out, "fig3_method_ratios")
@@ -314,7 +332,11 @@ def fig_agreement_by_condition(corr, out: Path) -> list[Path]:
     cb.outline.set_visible(False)
     cb.ax.tick_params(length=0, labelsize=6.5)
     cb.set_label("Kendall tau of G", fontsize=6.5, color=INK_2)
-    _title(fig, "Audits agree where memorization is high, and invert at the canary",
+    mean = np.nanmean(np.asarray(vals, dtype=float), axis=0)
+    best, worst = int(np.nanargmax(mean)), int(np.nanargmin(mean))
+    _title(fig, f"Audit families agree most at {COND_LABEL[conds[best]]} (mean τ "
+                f"{mean[best]:+.2f}) and least at {COND_LABEL[conds[worst]]} "
+                f"({mean[worst]:+.2f})",
            "Instance-level Kendall tau per condition (n ~25 each); bold: the 95% bootstrap "
            "interval excludes 0.")
     return _save(fig, out, "fig4_agreement_by_condition")
@@ -446,7 +468,9 @@ def fig_h3(flags, h3, out: Path, *, validity=None, bands=None, controlled=None) 
         c = controlled.iloc[0]
         parts.append(f"slope controlling for method and condition {c['slope']:+.2f} "
                      f"[{c['slope_lo']:+.2f}, {c['slope_hi']:+.2f}]")
-    _title(fig, "Models whose representations stay closer to M0 relearn more like M0 (H3)",
+    supported = w is not None and w.get("tau", np.nan) > 0
+    _title(fig, "Models whose representations stay closer to M0 relearn "
+                + ("more like M0 (H3)" if supported else "no more like M0 (H3 not supported)"),
            "Each point is a healthy unlearned model; vertical lines mark a retrain (0) and M0 "
            "(1). " + "; ".join(parts) + ".")
     return _save(fig, out, "fig7_h3")

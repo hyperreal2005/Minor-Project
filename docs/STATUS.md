@@ -18,9 +18,9 @@ genuinely unresolved — as opposed to merely unwritten.
 | 3 — Base models & oracles | A | **DONE, EXECUTED** | ✅ 62/62 trained on Kaggle; seed-SD gate passes |
 | 4 — Unlearning methods | A, B | **DONE** | Six methods + SSD behind one interface |
 | 5 — Full-pipeline pilot | all | **COMPLETE** | ✅ 240/240 from final implementations; cross-account consistency verified |
-| 6 — Audits | B, C | **COMPLETE — two cells to re-run** | 240/240, all six audits; the 20 Sep afternoon re-runs (canary privacy, rand-5000 SDE, relearning) are missing from the dataset version later stages read (3 Oct) |
+| 6 — Audits | B, C | **COMPLETE** | ✅ 240/240, all six audits; canary privacy and rand-5000 SDE re-run 11 Oct after a lost upload (see STALE STAGE 6 ROWS) |
 | 7 — Calibration & validity | D | **COMPLETE** | ✅ Every audit has a retrain FPR and a canary accuracy; guard, effect floor, twin check; `activation_l2` retired |
-| 8 — Analysis | D | **RE-RUN PENDING** | Built and reproduced 17/17, but its canary privacy inputs were stale; re-audit two cells, then calibrate + analyse again |
+| 8 — Analysis | D | **COMPLETE** | ✅ Corrected bundle (11 Oct) reproduced 17/17; every canary privacy result re-read (STAGE 8 RESULTS, CORRECTED) |
 
 > **Two different stage numberings are in play.** The table above is the *plan's build*
 > stages. `forgetcheck queue --stage N` uses *queue* stages, which are not the same: queue 3 =
@@ -1939,6 +1939,10 @@ above them and still not significantly above 0.5. The likely mechanism, not yet 
 a full-data target gives the canaries' wrong labels less probability than the weaker half-data
 references do, so the likelihood ratio runs below 1 for members and above 1 for test points.
 
+> **Superseded in part (11 Oct 2026).** Computed on stale canary privacy rows: with the corrected rows RMIA's TPR@1% catches
+> all 25 (balanced accuracy 0.95 calibrated, 1.00 native, once the guard is applied). See
+> STAGE 8 RESULTS, CORRECTED.
+
 At canary, RMIA's TPR@1% (native and calibrated alike) catches M0 but **none of the 25 unlearned
 models that remember**. Their residual association (`canary_acc` 0.11–0.19) is invisible at a 1%
 operating point.
@@ -2028,7 +2032,12 @@ Worst drop over seeds, in points below the retrain mean:
 The only models in between are three at mem-low: seeds of NegGrad+ (worst 7.4) and SCRUB (worst
 7.8), hurt by gradient ascent on *easy* examples. Losing 7–8 points of test accuracy is real
 damage, and at mem-low M0 barely differs from a retrain, so a flag there cannot be retention
-anyway. Any threshold from 3.8 to 7.4 classifies every model identically. No longer provisional.
+anyway. ~~Any threshold from 3.8 to 7.4 classifies every model identically.~~ **Corrected 11 Oct:**
+that was read from per-cell *worst* drops. Healthy models at mem-low also lose 4.15, 4.20 and 4.56
+points, and the damaged ones 5.02, 7.44 and 7.82, so only a threshold from 4.6 to 5.0 classifies
+every model identically. The guard at 5.0 lies inside it. It affects only mem-low, where behaviour
+alone is scored, and re-including the three damaged models changes no registered statistic.
+No longer provisional.
 
 ### 2. The canary with the guard: every prediction held
 
@@ -2221,6 +2230,12 @@ scale, §16.2 mixed models, and §15.1 rank tables, descriptive only.
 
 ## STAGE 8 RESULTS (1 Oct 2026)
 
+> **Superseded in part (11 Oct 2026).** Every result below that uses canary privacy was computed on stale rows (the
+> unlearned canary models' privacy audited on the true labels). Those are re-read in **STAGE 8
+> RESULTS, CORRECTED** further down, which wins wherever the two differ: RQ6 by degree, the
+> canary column of every privacy pair, H2a/H2b, RQ4's counts, agreement at the canary, and the
+> population-MIA method ratios.
+
 Notebook 06 ran on Kaggle; the bundle was analysed here. **All 11 Kaggle tables were reproduced
 exactly** from the calibration tables alone, bootstrap intervals included (seed 300).
 
@@ -2407,9 +2422,9 @@ notebook 06** (GPU).
 | | file | finding |
 |---|---|---|
 | 1 | `fig1_native_validity` | The audits' own rules flag genuine retrains (up to 17/17); calibrated: 2.4% and 4.2% |
-| 2 | `fig2_canary_degree` | Behaviour, representation and relearning track memory; no MIA does |
+| 2 | `fig2_canary_degree` | ~~no MIA does~~ (stale rows). Corrected: 12 of 17 metrics track memory; RMIA most closely |
 | 3 | `fig3_method_ratios` | Which method looks most retrain-like depends on the audit |
-| 4 | `fig4_agreement_by_condition` | Audits agree at mem-high and invert at the canary |
+| 4 | `fig4_agreement_by_condition` | ~~invert at the canary~~ (stale rows). Corrected: agree most at mem-high (+0.38) and canary (+0.36), least at mem-med |
 | 5 | `fig5_beyond_m0` | Unlearning moves representations farther from retraining than M0 |
 | 6 | `fig6_matrix` | Within-condition τ between every pair of metrics (the plan's disagreement matrix) |
 | 7 | `fig7_h3` | H3 on the signed scale: within-condition τ +0.64, controlled slope +0.49 |
@@ -2545,7 +2560,7 @@ the wider of the plot and the title, at balanced line lengths. Figure 2 had left
 third line. The figures are rendered from the tables alone, so the local re-render needs no
 Kaggle run.
 
-## STALE STAGE 6 ROWS IN THE FINAL BUNDLE — found 3 Oct 2026, re-run pending
+## STALE STAGE 6 ROWS IN THE FINAL BUNDLE — found 3 Oct 2026, re-run 11 Oct
 
 Found while extracting the results write-up's tables. Some unlearned models' Stage 6 records in
 the bundle do not match what STATUS recorded after Stage 6's last re-runs. They match the values
@@ -2660,11 +2675,163 @@ latest version attached. The checks that it landed:
 - in `provenance`, canary privacy and rand-5000 SDE dated October;
 - **version 9 in the dataset's History**.
 
+### The re-run landed (11 Oct 2026)
+
+Notebook 06 on version 8, then the two re-audits, then Steps 0–4.
+- **Records:** canary privacy 270 records (6 privacy + 3 canary ground-truth per model; the
+  ground truth now rides along with any forced canary pass). rand-5000 SDE 90 records.
+- **`calibrate`:** "records: none predate the fixes they depend on (4 rules checked)";
+  `stale.parquet` is empty.
+- **`provenance`:** canary privacy written 2026-10-11 08:53–08:54 UTC and rand-5000 SDE
+  08:56–09:49, both by commit `ef0d8cc`. Canary relearning is from the 20 Sep morning run
+  (`3d24436`), after its fix.
+- **The values equal the 20 Sep afternoon table:**
+  - canary population AUC 0.947 / 0.959 / 0.945 / 0.963 / 0.941 (finetune, l1sparse,
+    neggradplus, salun, scrub);
+  - `neggrad` RMIA 0.896;
+  - rand-5000 `sde_margin` −0.005 to +0.005 (healthy).
+- **Exactly the expected rows changed:** canary privacy (176 values) and rand-5000 SDE (74).
+  Bands, the canary ground truth, utility, relearning and the twin check are identical.
+- **Analysis:** all 17 tables recompute exactly here from the bundle's calibration.
+
+## STAGE 8 RESULTS, CORRECTED (11 Oct 2026)
+
+What the corrected canary privacy rows change. Everything not listed is unchanged:
+- every behaviour, representation and relearning result;
+- H3;
+- RQ1's verdicts and RQ3/H1;
+- the interaction tests;
+- the pass/fail disagreement table;
+- the inventory;
+- the native-rule and calibrated-FPR tables (retrains and M0 only).
+
+### RQ6 by degree: membership inference tracks memory, and RMIA best
+
+12 of 17 metrics track canary memory with an interval clear of 0; none ranks it backwards.
+
+| metric | τ [95% CI] | was (stale) |
+|---|---|---|
+| `mia_acc_rmia` | **+0.75** [0.57, 0.89] | −0.34 |
+| `mia_auc_rmia` | **+0.74** [0.54, 0.89] | −0.33 |
+| `js_to_original` | +0.68 [0.45, 0.84] | unchanged |
+| `mia_tpr_at_fpr_rmia` | +0.55 [0.35, 0.73] | undefined |
+| `cka_to_original` | +0.55 [0.25, 0.77] | unchanged |
+| `relearn_t80` | +0.53 [0.33, 0.70] | unchanged |
+| `mia_auc_pop` | +0.52 [0.29, 0.72] | −0.27 |
+| `cka_linear` | +0.51 [0.19, 0.75] | unchanged |
+| `mia_acc_pop` | +0.42 [0.17, 0.64] | −0.38 |
+| `mia_tpr_at_fpr_pop` | +0.25 [−0.05, 0.52] | −0.23 |
+
+The other metrics are unchanged: logit_l2 +0.43, cka_rbf +0.41, sde_hsic +0.33 track memory;
+js_to_oracle, relearn_auc, sde_margin and pred_agreement do not.
+
+**The superseded claim**, "no membership-inference metric tracks memory; all lean backwards",
+came entirely from scoring the unlearned models on the true labels while the retrains and M0
+were scored on the canary labels.
+
+### Canary validity (Stage 7) for RMIA
+
+Balanced accuracy, raw / with the damage guard:
+
+| row | now | was (stale) |
+|---|---|---|
+| calibrated TPR@1% | 0.70 / **0.95** | 0.53 / 0.53 |
+| native TPR@1% | 0.75 / **1.00** | 0.58 / 0.58 |
+| native AUC | 0.25 / 0.50 | 0.50 / 0.50 |
+
+- **TPR@1%** now catches all 30 rememberers, against 5 before.
+- **Native AUC** is still blind to the rememberers. It now also flags the destroyed `neggrad`:
+  its RMIA AUC of 0.896 is the reference-prior artefact recorded at Stage 6.
+
+### The registered pairs (§15.2)
+
+| pair | pooled τ [95% CI] | within | canary |
+|---|---|---|---|
+| behaviour vs population MIA | +0.36 [0.25, 0.45] (was −0.07) | 0.28 (0.17) | +0.03 (−0.73) |
+| behaviour vs RMIA | +0.22 [0.12, 0.32] (0.19) | 0.18 (0.03) | +0.33 (−0.71) |
+| population MIA vs relearning | +0.23 [0.15, 0.32] (−0.01) | 0.24 (0.09) | +0.10 (−0.77) |
+| RMIA vs relearning | +0.54 [0.45, 0.62] (0.47) | 0.56 (0.39) | +0.28 (−0.71) |
+| population MIA vs RMIA | +0.16 [0.03, 0.28] (−0.09) | 0.21 (0.24) | +0.57 (+0.82) |
+| behaviour vs representation | unchanged: +0.52, within 0.20 | | +0.63 |
+| representation vs relearning | unchanged: −0.06, within −0.34 | | +0.61 |
+
+### What the corrections mean for the hypotheses
+
+- **H2a (behaviour vs privacy) — still supported, on a narrower basis.** The rankings agree
+  where memorization is high (mem-high +0.74 / +0.75) and are weak or reversed elsewhere:
+  behaviour vs RMIA −0.36 at mem-med, and −0.09 to +0.45 across the random sets. The canary is
+  no longer the strong reversal it appeared to be (+0.03 / +0.33).
+- **H2b (population vs RMIA) — the rankings differ: supported. "More lenient": not supported.**
+  - Pooled τ +0.16, within 0.21. They agree at canary (+0.57) and mem-high (+0.70), disagree at
+    mem-med (−0.30), and are unrelated at the random sets (≈ +0.1).
+  - On verdicts (unchanged): 20 models pass the population attack while RMIA flags them, against
+    10 the other way, McNemar p = 0.099.
+  - On G: the population attack places models slightly *farther* from the retrains than RMIA
+    does (mean G_pop − G_rmia +0.17 [0.09, 0.26]; was +0.43, inflated by the canary).
+- **RQ4 (does relearning see what RMIA misses?) — yes, still concentrated in SalUn.**
+  - Of 60 models RMIA calls retrain-like (G < 0.5), 38 relearn like M0 (was 58 and 41).
+  - SalUn: 28 and 25, unchanged.
+  - At canary: 20 and 15. The ground truth says all 20 still hold the canary association.
+    RMIA places all 20 nearer a retrain than M0; relearning places 15 of them nearer M0.
+- **H4, second half (agreement by condition) — the reversal is cleaner.**
+  - Mean per-condition τ over the registered pairs: mem-high +0.38, **canary +0.36 (no negative
+    pair)**, random sets +0.11 to +0.27, mem-med +0.01.
+  - Audit families agree most where memorization is strongest. H4 predicted the opposite.
+- **Population MIA's method ratios** (confirmatory model): no term is significant any more.
+  SCRUB ×0.72 (p = 0.077, was ×0.67, p = 0.036) and l1sparse ×0.69 (p = 0.052).
+- **RMIA's method ratios** hold: SalUn ×0.39, NegGrad+ ×0.47.
+- **RQ1, beyond M0:** population MIA at canary G > 1 for **0%** of models (was 100%).
+
+### Figures
+
+Every title that states a finding now **computes it from the data under it**. Figures 2 and 4
+had hard-coded theirs, and after the correction both stated the opposite of what they plotted.
+A test feeds each figure data pointing one way, then the other.
+
+| figure | old title | corrected title |
+|---|---|---|
+| 2 | "…membership inference does not" | "12 of 17 audit metrics track how much a model remembers; RMIA most closely" |
+| 4 | "…invert at the canary" | "Audit families agree most at mem-high (mean τ +0.38) and least at mem-med (+0.01)" |
+
+Figures 1, 3 and 7 keep their titles, now checked against the data. The figures in the
+Kaggle bundle carry the old titles; the local render (`forgetcheck figures`) is current.
+
+### Found while writing RESULTS.md (11 Oct)
+
+Each claim in the write-up was checked against the final tables. Four earlier statements here
+were not exact, and are corrected where they stand or below:
+- **The damage guard's stable range** is 4.6–5.0, not 3.8–7.4 (third read, corrected in place).
+- **"The destroyed control passes every retrain-free audit"** was true at rand-500, the first
+  condition audited, and was generalised too far. It does look private everywhere (population
+  AUC 0.49–0.53), but:
+  - RMIA's rule flags it at mem-high (0.595) and the canary (0.896), a reference-model artefact
+    of a constant predictor;
+  - the population rule flags it at mem-low and mem-med, where it flags genuine retrains too.
+- **SCRUB on the canary:** the Stage 5 note "SCRUB moves from worst canary forgetter to second
+  best" does not hold on the final 25 models. Its `canary_acc` fell from 0.31–0.34 to 0.186, but
+  that is still the highest of the healthy methods (NegGrad+ 0.181, fine-tune 0.170, SalUn 0.146,
+  L1-sparse 0.108), as is its `canary_top_wrong`, 0.616. The fix changed the size, not the rank.
+- **The canary, with the guard:** 23 of 39 readings reach 1.00 (19 only through the guard). The
+  "18" in the sixth read predates the corrected canary privacy rows: RMIA's native TPR@1% now also
+  goes from 0.75 to 1.00, and the four original-referenced rows were at 1.00 already.
+
+## RESULTS.md written (11 Oct 2026)
+
+[`RESULTS.md`](RESULTS.md) is the team's results reference:
+- a summary;
+- key ideas;
+- every stage with its tables and reasoning;
+- limitations;
+- the corrections that change how a result reads;
+- reproduction steps;
+- appendices with every per-method table.
+
+Its tables were generated from the final bundle's tables, not typed. Its figures are in
+`docs/figures/` (tracked), copied from the local render.
+
 ### Open
 
-1. **The re-run above**, then re-read every canary privacy result. The results write-up waits on
-   it.
-2. Figure sizes for the paper template, once the venue is known.
+1. Figure sizes for the paper template, once the venue is known.
 
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 
