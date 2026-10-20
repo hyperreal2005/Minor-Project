@@ -12,7 +12,8 @@ they carry decisions the code is expected to follow.
 | [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) | **The build spec.** Binding data contracts (run IDs, result schema, metric registry), the eight forget conditions, nine stages each with an acceptance gate, ownership across four members, Kaggle execution workflow, storage budget, failure playbook. | Writing any code; before every stage; when a run needs an ID or a metric needs a name |
 | [`FORGETCHECK_REVIEW.md`](FORGETCHECK_REVIEW.md) | Independent red-team review of the frozen v1.0 position against the 2026 literature. Novelty assessment, four blocking design flaws, three major ones, revised experimental design, compute plan, team split, revised schedule. | Starting any work stream; deciding what to build; defending a design choice |
 | [`RESEARCH_LOG.md`](RESEARCH_LOG.md) | The evidence behind the review. Source-by-source findings, reasoning chains for every recommendation, the computations performed, the hardware investigation, what was checked and found sound, and what remains unverified. | A recommendation looks wrong; a reviewer challenges a claim; re-running the novelty check before submission |
-| `../ForgetCheck_Master_Project_Reference.docx` | The master reference, **now at v2.0**. Canonical project description for the synopsis, reports, paper and presentation. | Always — it is the single source of truth |
+| `../ForgetCheck_Master_Project_Reference.docx` | The master reference, **now at v3.0** (19 Oct 2026): the study as built and run, the outcome of every RQ and hypothesis (§8.4), the as-run timeline and remaining deadlines (§21). Its changelog lists every change from v2.0. Canonical project description for the reports, paper and presentation. | Always — it is the single source of truth |
+| [`ForgetCheck_Master_Project_Reference_v2.0.docx`](ForgetCheck_Master_Project_Reference_v2.0.docx) | v2.0 as approved after the 25 Aug review, kept so v3.0 can be diffed against it. | Showing the mentor what moved between v2.0 and v3.0 |
 | [`ForgetCheck_Master_Project_Reference_v1.0_ORIGINAL.docx`](ForgetCheck_Master_Project_Reference_v1.0_ORIGINAL.docx) | Untouched v1.0, kept for provenance so any change can be diffed against the frozen position. | Showing the mentor exactly what moved between versions |
 
 Web versions (same content, easier to share):
@@ -65,6 +66,7 @@ than with method count.
 
 - The master `.docx` is the canonical description. If these markdown files and the `.docx` ever
   disagree, the `.docx` wins and the markdown gets corrected.
-- Reference numbers `[1]`–`[18]` are v1.0's bibliography; `[19]`–`[34]` were added in v2.0.
+- Reference numbers `[1]`–`[18]` are v1.0's bibliography; `[19]`–`[34]` were added in v2.0;
+  `[35]`–`[37]` (SDE, CKA, memorization estimates) in v3.0.
 - Terminology follows the *Untraining* / *Unlearning* distinction of reference `[19]`. ForgetCheck
   is an **Untraining** study throughout.

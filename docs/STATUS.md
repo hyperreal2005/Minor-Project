@@ -2833,6 +2833,30 @@ Its tables were generated from the final bundle's tables, not typed. Its figures
 
 1. Figure sizes for the paper template, once the venue is known.
 
+## Master reference v3.0 (19 Oct 2026)
+
+`../ForgetCheck_Master_Project_Reference.docx` is brought up to date with the study as built and
+run; v2.0 is kept as `ForgetCheck_Master_Project_Reference_v2.0.docx`. The research claim, RQs
+and hypotheses are unchanged. Their outcomes are recorded beside them (§8.4), and the timeline
+(§21) is now the as-run dates plus the remaining deadlines. Every change is listed in the
+document's own v3.0 changelog. Numbers in it are quoted from `RESULTS.md`.
+
+It also repairs v2.0 layout defects:
+- §15.5 and the §21 ownership note sat inside the contents list;
+- body text was set in heading styles;
+- list items had no bullets;
+- the cover title lacked "Audit Validity".
+
+For the mentor:
+- v3.0 is the first time the master document states the as-built departures, all of them
+  decisions recorded here when taken:
+  - the method settings (§12.1);
+  - RBF-CKA as the second representation measure, not a non-CKA one;
+  - activation distance retired;
+  - SDE added.
+- **Ownership, unresolved:** §21 (unchanged since v2.0) gives the dashboard to member D; the
+  implementation plan's week 15–16 row gives it to A. Confirm which.
+
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 
 Checkpoints and records are complete and consistent. One thing is **not** settled, and it affects
@@ -2917,11 +2941,13 @@ this — do not pool size conditions as if they were separate samples.
 
 ## Next actions
 
-1. **Full Stage 5** — 240 runs, ~10.6 GPU-hours, ~3.5 h per account sharded three ways:
-   `forgetcheck queue --stage 5 --account K --of 3`. Cleared to launch; the pilot re-run is clean.
-2. Then **Stage 6: the audit modules** (behavioral, privacy_population, privacy_rmia,
-   representation, relearning). This is the actual contribution and none of it is written yet.
-3. Stage 7 calibration, Stage 8 analysis.
+Stages 0–8 are complete (11 Oct 2026). What remains, from master reference v3.0 §21:
+
+1. **Final paper to the mentor — by 29 Oct 2026.**
+2. **Final progress presentation — 31 Oct.**
+3. **Streamlit dashboard** (a visualization layer over the results, §20.2) **and the final
+   presentation — 5 Nov.**
+4. Figure sizes for the paper template, once the venue is known.
 
 **Novelty thread `9IzfArmoHq` — closed, 8 Sep 2026.** It is *Unlearning Evaluation through Subset
 Statistical Independence* (ICLR 2026 = arXiv 2603.00587): a retrain-free HSIC audit that argues
