@@ -47,6 +47,7 @@ results/calibrate_report.txt
 results/analyse_report.txt
 forgetcheck_stage8_results*.zip
 !results/**/.gitkeep
+Research Paper Docs/ 
 
 # --- editors / OS -----------------------------------------------------------
 .vscode/

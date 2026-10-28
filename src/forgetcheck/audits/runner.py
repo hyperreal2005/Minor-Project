@@ -819,6 +819,109 @@ def original_similarity(
     return 1 if failed else 0
 
 
+def relearning_curves(
+    ctxobj,
+    *,
+    device: str = "cpu",
+    batch_size: int = 512,
+    force: bool = False,
+    forget: str | None = None,
+    methods: Sequence[str] | None = None,
+) -> int:
+    """The relearning curves behind Stage 6's `relearn_*` records, step by step, for display.
+
+    Stage 6 kept only each curve's summaries (AUC, T80, normalised recovery). This re-runs the
+    identical protocol -- the same `_ConditionCache.relearn_arm`, batches, seeds and evaluation
+    -- for every unlearned model and its anchors (paired retrain, M0, the random-init floor), and
+    writes one table per condition, ``results/curves/<forget_id>.parquet``: one row per (arm,
+    model, step) with forget, retain and test accuracy. GPU training is not bit-reproducible, so a
+    re-run curve can differ slightly from the one Stage 6 summarised; each table carries both AUCs
+    so the difference is visible. Resumable by condition.
+    """
+    import pandas as pd
+
+    from ..unlearn import base_run_id_for
+    from .relearning import curve_auc
+
+    targets = available_targets(ctxobj.store, role="unlearn", forget=forget)
+    if methods:
+        targets = [t for t in targets if t.method in set(methods)]
+    out_dir = ctxobj.records_dir.parent / "curves"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    by_condition: dict[str, list[AuditTarget]] = {}
+    for t in targets:
+        by_condition.setdefault(t.forget_id, []).append(t)
+
+    # Stage 6's AUCs, to set beside the re-run ones.
+    from ..registry import read_records
+
+    try:
+        rec = read_records(ctxobj.records_dir)
+        rec = rec[rec["metric"] == "relearn_auc"]
+        recorded = {(r.forget_id, r.run_id): float(r.value) for r in rec.itertuples()}
+    except Exception:  # noqa: BLE001 -- display only; the curves stand without it
+        recorded = {}
+
+    failed = 0
+    for cond in sorted(by_condition):
+        path = out_dir / f"{cond}.parquet"
+        if path.is_file() and not force:
+            print(f"{cond}: already exported ({path.name}); --force to redo")
+            continue
+        spec = ctxobj.spec(cond)
+        probes = build_probes(
+            forget_indices=ctxobj.forget_indices(cond), n_train=ctxobj.bundle.n_train,
+            n_test=ctxobj.bundle.n_test, forget_id=cond,
+            config=ctxobj.audits.get("representation", {}),
+        )
+        cache = _ConditionCache(ctxobj, forget_id=cond, probes=probes,
+                                layers=ctxobj.audits["representation"]["layers"],
+                                device=device, batch_size=batch_size)
+        rows: list[dict] = []
+
+        def add(arm, rid, method, seed, curve):
+            auc = curve_auc(curve["steps"], curve["forget_acc"])
+            for k, step in enumerate(curve["steps"]):
+                rows.append({
+                    "forget_id": cond, "arm": arm, "run_id": rid, "method": method,
+                    "train_seed": seed, "step": int(step),
+                    **{m: float(curve[m][k]) for m in ("forget_acc", "retain_acc", "test_acc")
+                       if m in curve},
+                    "auc": float(auc), "recorded_auc": recorded.get((cond, rid), float("nan")),
+                })
+
+        group = by_condition[cond]
+        print(f"\n{cond}: {len(group)} models", flush=True)
+        anchored: set[int] = set()
+        for t in group:
+            t0 = time.perf_counter()
+            try:
+                state, _ = ctxobj.store.load_checkpoint(t.run_id)
+                add("method", t.run_id, t.method, t.seed, cache.relearn_arm(state, seed=t.seed))
+                if t.seed not in anchored:
+                    arms = cache.relearn_anchors(t.seed)
+                    ids = {"oracle": run_id(role="oracle", forget=cond, seed=t.seed,
+                                            seed_kind="train"),
+                           "original": base_run_id_for(spec, t.seed)}
+                    for arm, rid in ids.items():
+                        if arm in arms:
+                            add(arm, rid, arm, t.seed, arms[arm])
+                    if "randinit" in arms and not anchored:
+                        add("randinit", "randinit", "randinit", 0, arms["randinit"])
+                    anchored.add(t.seed)
+                print(f"  {t.run_id}: {time.perf_counter() - t0:.1f}s", flush=True)
+            except Exception as exc:  # one bad model must not lose the condition
+                failed += 1
+                print(f"  {t.run_id}: FAILED: {type(exc).__name__}: {exc}", flush=True)
+        if rows:
+            tmp = path.with_suffix(".parquet.tmp")
+            pd.DataFrame(rows).to_parquet(tmp, index=False)
+            tmp.replace(path)
+            print(f"{cond}: {len(rows)} rows -> {path}")
+    print(f"\n{failed} models failed")
+    return 1 if failed else 0
+
+
 def _n_probe(probe: str, probes: ProbeSpec, outputs: ModelOutputs) -> int:
     if probe in ("forget", "retain", "test"):
         return int(getattr(probes, probe).size)

@@ -565,6 +565,16 @@ def cmd_original_similarity(args) -> int:
                                force=args.force, forget=args.forget)
 
 
+def cmd_relearn_curves(args) -> int:
+    """The relearning curves, step by step, for the dashboard. GPU strongly recommended."""
+    from .audits.runner import relearning_curves
+
+    ctx = _ctx(args)
+    methods = [m.strip() for m in args.methods.split(",")] if args.methods else None
+    return relearning_curves(ctx, device=args.device, batch_size=args.batch_size,
+                             force=args.force, forget=args.forget, methods=methods)
+
+
 def cmd_diagnose_twins(args) -> int:
     """Does a shared initialisation make models look retrain-like? Cached outputs only, no GPU.
 
@@ -764,6 +774,14 @@ def build_parser() -> argparse.ArgumentParser:
     osim.add_argument("--batch-size", type=int, default=512)
     osim.add_argument("--force", action="store_true", help="recompute models already measured")
     osim.set_defaults(func=cmd_original_similarity)
+
+    rc = sub.add_parser("relearn-curves",
+                        help="the relearning curves step by step, for the dashboard (GPU)")
+    rc.add_argument("--forget", default=None, help="one condition only")
+    rc.add_argument("--methods", default=None, help="comma-separated, e.g. salun,finetune")
+    rc.add_argument("--batch-size", type=int, default=512)
+    rc.add_argument("--force", action="store_true", help="redo conditions already exported")
+    rc.set_defaults(func=cmd_relearn_curves)
 
     tw = sub.add_parser("diagnose-twins",
                         help="does a shared initialisation make models look retrain-like? (CPU)")

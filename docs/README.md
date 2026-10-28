@@ -7,6 +7,7 @@ they carry decisions the code is expected to follow.
 
 | File | What it is | Read it when |
 |---|---|---|
+| [`../dashboard/`](../dashboard/README.md) | **The interactive dashboard.** Guided tour, model inspector, audit validity, agreement explorer, calibration what-ifs, forget-set gallery. Run with `streamlit run dashboard\app.py`. | Presenting; exploring a result interactively |
 | [`RESULTS.md`](RESULTS.md) | **The results, stage by stage.** One-page summary, the key ideas, every stage's tables and reasoning, limitations, the corrections that change how a result reads, and how to reproduce every number. Figures in [`figures/`](figures/). | Explaining, checking or quoting any result |
 | [`STATUS.md`](STATUS.md) | **Where the build is right now.** Stage-by-stage state against the plan's gates, decisions taken during implementation and why, open questions that are genuinely unresolved, and next actions. | Resuming work after any break; before starting a stage |
 | [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) | **The build spec.** Binding data contracts (run IDs, result schema, metric registry), the eight forget conditions, nine stages each with an acceptance gate, ownership across four members, Kaggle execution workflow, storage budget, failure playbook. | Writing any code; before every stage; when a run needs an ID or a metric needs a name |

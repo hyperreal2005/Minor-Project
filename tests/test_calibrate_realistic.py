@@ -271,6 +271,23 @@ class TestRealisticRecords:
         f = tables["flags"]
         assert f["run_id"].nunique() == len(CONDITIONS) * len(METHODS) * len(SEEDS)
 
+    def test_candidates_hold_every_known_answer_behind_the_rates(self, tables):
+        """The per-model retrain and M0 values, so a band can be rebuilt under another rule."""
+        c = tables["candidates"]
+        assert set(c["role"]) == {"oracle", "base"}
+        k = c.set_index(["forget_id", "metric", "probe_set"]).sort_index()
+        hi = k.loc[(PRIMARY, "js_to_oracle", "forget")]
+        b = tables["bands"].set_index(["forget_id", "metric", "probe_set"])
+        band = b.loc[(PRIMARY, "js_to_oracle", "forget")]
+        members = hi[hi["band_member"]]
+        assert len(members) == band["n"] == 17
+        assert np.isclose(members["value"].mean(), band["mean"])
+        # The self-anchored metric's band keeps only the ensemble, and the export says so.
+        rn = k.loc[(PRIMARY, "relearn_norm", "forget")]
+        assert rn["band_member"].sum() == 12
+        v = tables["validity"].set_index(["forget_id", "metric", "probe_set"])
+        assert len(hi[hi["role"] == "base"]) == v.loc[(PRIMARY, "js_to_oracle", "forget"), "m0_tpr_n"]
+
     def test_canary_ground_truth_by_role(self, tables):
         c = tables["canary"].set_index("role")["ground_truth"]
         assert not c.loc["oracle"].any() and c.loc["base"].all()

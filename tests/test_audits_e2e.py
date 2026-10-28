@@ -418,3 +418,29 @@ def test_original_similarity_measures_every_model_against_its_own_m0(tmp_path, c
 
     assert original_similarity(ctx, device="cpu", batch_size=64) == 0
     assert "3 models, 3 already measured" in capsys.readouterr().out
+
+
+def test_relearning_curves_export_every_arm_step_by_step(tmp_path, capsys):
+    """The dashboard's curves through the real runner: the unlearned model and its anchors
+    (paired retrain, M0, the random-init floor), one row per evaluation step, the re-run AUC
+    beside Stage 6's, and a second run that skips the exported condition."""
+    import pandas as pd
+
+    from forgetcheck.audits.runner import relearning_curves
+
+    ctx = _Ctx(tmp_path)
+    target = _seed_store(ctx)
+    assert relearning_curves(ctx, device="cpu", batch_size=64) == 0
+    files = sorted((ctx.records_dir.parent / "curves").glob("*.parquet"))
+    assert len(files) == 1
+    c = pd.read_parquet(files[0])
+    assert set(c["arm"]) == {"method", "oracle", "original", "randinit"}
+    steps = sorted(int(s) for s in ctx.audits["relearning"]["eval_steps"])
+    for _, g in c.groupby(["arm", "run_id"]):
+        assert sorted(g["step"]) == steps
+        assert g["forget_acc"].between(0, 1).all() and g["auc"].nunique() == 1
+    assert target in set(c["run_id"])
+    assert "0 models failed" in capsys.readouterr().out
+
+    assert relearning_curves(ctx, device="cpu", batch_size=64) == 0
+    assert "already exported" in capsys.readouterr().out

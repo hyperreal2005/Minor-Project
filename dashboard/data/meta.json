@@ -1,0 +1,33 @@
+{
+  "built": "2026-10-28 14:02 UTC",
+  "commit": "2b96c72",
+  "has_candidates": false,
+  "curves_rows": 0,
+  "gallery_images": 192,
+  "tables": {
+    "flags": 10008,
+    "bands": 335,
+    "validity": 335,
+    "canary": 40,
+    "canary_validity": 43,
+    "utility": 332,
+    "training": 302,
+    "relearning_protocol": 8,
+    "relearning_vs_accuracy": 8,
+    "twins": 16,
+    "provenance": 144,
+    "correlations": 60,
+    "canary_continuous": 17,
+    "mixed_effects": 55,
+    "method_summary": 720,
+    "h3": 8,
+    "h3_controlled": 1,
+    "difficulty": 35,
+    "interaction": 5,
+    "correlation_matrix": 153,
+    "disagreement": 76,
+    "rank_tables": 175,
+    "rq4_by_method": 30,
+    "agreement_by_condition": 7
+  }
+}

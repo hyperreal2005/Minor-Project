@@ -960,6 +960,68 @@ def nb_analyse() -> dict:
     ])
 
 
+BUNDLE_CURVES = """\
+# The curves as one small download: result tables only.
+import zipfile
+from pathlib import Path
+
+bundle = Path("/kaggle/working/forgetcheck_curves.zip")
+files = sorted((REPO_DIR / "results" / "curves").glob("*.parquet"))
+with zipfile.ZipFile(bundle, "w", zipfile.ZIP_DEFLATED) as z:
+    for p in files:
+        z.write(p, f"results/curves/{p.name}")
+print(f"{len(files)} conditions -> {bundle}  ({bundle.stat().st_size / 1e6:.1f} MB)")
+if len(files) < 8:
+    print("!! fewer than 8 conditions: re-run the curves cell (finished ones are skipped)")
+"""
+
+CHECK_CURVES = """\
+import pandas as pd
+
+c = pd.concat(pd.read_parquet(p) for p in sorted((REPO_DIR / "results" / "curves").glob("*.parquet")))
+print(c.groupby(["forget_id", "arm"])["run_id"].nunique().unstack().to_string(), "\\n")
+# Re-run vs Stage 6: GPU training is not bit-reproducible, so small differences are expected.
+m = c[(c["arm"] == "method") & c["recorded_auc"].notna()].drop_duplicates("run_id")
+if len(m):
+    d = (m["auc"] - m["recorded_auc"]).abs()
+    print(f"re-run AUC vs Stage 6's, over {len(m)} models: median |diff| {d.median():.4f}, "
+          f"max {d.max():.4f}")
+"""
+
+
+def nb_curves() -> dict:
+    header = (
+        "# 07 - Relearning curves for the dashboard\n\n"
+        "Stage 6 kept only each relearning curve's summaries (AUC, T80, normalised recovery). "
+        "This re-runs the identical protocol -- same batches, seeds and evaluation steps -- for "
+        "all 240 unlearned models and their anchors (paired retrain, M0, the random-init floor) "
+        "and keeps every step, so the dashboard can show forgotten behaviour coming back.\n\n"
+        "**Attach** `forgetcheck-cifar10`, `forgetcheck-artifacts` and `forgetcheck-stage6`. "
+        "**Accelerator: GPU (T4).** Roughly 1-3 hours; to time it first, run the curves cell "
+        "with `--forget rand-500` added. Resumable by condition: if the session dies, re-run "
+        "from the top and finished conditions are skipped. Nothing is pushed to a dataset -- "
+        "download the zip at the end.\n"
+    )
+    config = (
+        'DEVICE = "cuda" if __import__("torch").cuda.is_available() else "cpu"\n'
+        'print(f"device {DEVICE}")\n'
+    )
+    return notebook([
+        md(header),
+        code(INSTALL),
+        code(SETUP_AUDIT),
+        code(config),
+        md("## The curves\n\nOne line per model; each condition ends with the rows it wrote."),
+        code("!{CLI} --root . --device {DEVICE} relearn-curves\n"),
+        md("## Check\n\nEvery condition should show 25-30 `method` models, 5 `oracle`, 5 "
+           "`original` and 1 `randinit`. The re-run AUCs should sit close to Stage 6's."),
+        code(CHECK_CURVES),
+        md("## One file to download\n\nIn the right-hand panel, under **Output**, download "
+           "`forgetcheck_curves.zip`."),
+        code(BUNDLE_CURVES),
+    ])
+
+
 def main() -> None:
     notebooks = {
         "00_verify_setup.ipynb": nb_verify(),
@@ -988,6 +1050,7 @@ def main() -> None:
         "04_audit.ipynb": nb_audit(),
         "05_calibrate.ipynb": nb_calibrate(),
         "06_analyse.ipynb": nb_analyse(),
+        "07_curves.ipynb": nb_curves(),
     }
     for name, nb in notebooks.items():
         path = HERE / name

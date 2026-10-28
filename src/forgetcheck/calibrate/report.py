@@ -348,7 +348,7 @@ def calibrate(df, *, registry, config: CalibrationConfig) -> dict:
     damaged = {(u.forget_id, u.run_id): bool(u.damaged) for u in utility.itertuples()}
     drop_pp = {(u.forget_id, u.run_id): float(u.drop_pp) for u in utility.itertuples()}
 
-    bands, validity, flags = [], [], []
+    bands, validity, flags, candidates = [], [], [], []
     group_cols = ["forget_id", "audit", "metric", "probe_set"]
     for (cond, audit, metric, probe), g in meas.groupby(group_cols, sort=True):
         if metric not in registry:
@@ -425,6 +425,19 @@ def calibrate(df, *, registry, config: CalibrationConfig) -> dict:
 
         validity.append(row)
 
+        # ---- the known answers themselves, per model ---------------------------------------
+        # Every retrain and M0 value behind the band and the rates above, so a reader (the
+        # dashboard) can rebuild a band under another rule and see the false-positive rate move.
+        # `band_member` marks the retrains this metric's band is built from (_band_members).
+        for idx, r in g[g["role"].isin(["oracle", "base"])].iterrows():
+            candidates.append({
+                "run_id": r["run_id"], "role": r["role"], "forget_id": cond,
+                "train_seed": r.get("train_seed"), "oracle_seed": r.get("oracle_seed"),
+                "audit": audit, "metric": metric, "probe_set": probe, "value": float(r["value"]),
+                "band_member": bool(r["role"] == "oracle" and idx in oracles.index),
+                "retired": retired,
+            })
+
         # ---- the registered effect size (implementation plan §4.4) --------------------------
         # The normalized oracle gap G = |m(Mu) - mean m(Mr)| / |m(M0) - mean m(Mr)|: 0 retrain-
         # like, 1 M0-like. Undefined in a marked cell -- M0 inside the retrain noise, or, for a
@@ -457,6 +470,7 @@ def calibrate(df, *, registry, config: CalibrationConfig) -> dict:
         "bands": pd.DataFrame(bands),
         "validity": pd.DataFrame(validity),
         "flags": pd.DataFrame(flags),
+        "candidates": pd.DataFrame(candidates),
         "canary": canary,
         "canary_validity": canary_validity,
         "relearning_protocol": _relearning_protocol(df),

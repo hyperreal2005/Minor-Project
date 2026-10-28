@@ -2857,6 +2857,30 @@ For the mentor:
 - **Ownership, unresolved:** §21 (unchanged since v2.0) gives the dashboard to member D; the
   implementation plan's week 15–16 row gives it to A. Confirm which.
 
+## Dashboard built, and two exports for it (28 Oct 2026)
+
+`dashboard/` is a Streamlit app over the result tables: ten pages, including a six-step guided
+tour for the presentation and a calibration lab of what-ifs (band size, band rule, damage
+threshold, minimum effect). See [`../dashboard/README.md`](../dashboard/README.md). It runs from
+its own committed snapshot, `dashboard/data/` (~2 MB, built by `dashboard/prepare_data.py`),
+because `results/` is gitignored. Every headline is computed from the tables; the landing page's
+five numbers reproduce RESULTS.md (17/17, 2.4% · 4.2%, 23/39, 0/175, τ +0.64).
+
+Two exports were added so the dashboard can show what the records never held:
+- **`calibrate` now writes `candidates.parquet`**: every retrain's and M0's own value per audit
+  metric, with `band_member`. A band can then be rebuilt under another rule and its leave-one-out
+  false-positive rate recomputed (lab B). Needs a re-run of notebook 06; nothing else changes.
+- **`forgetcheck relearn-curves`** (notebook `07_curves.ipynb`, GPU): re-runs the relearning
+  protocol step by step for all 240 models and their anchors and writes `results/curves/`. Stage
+  6 kept only AUC, T80 and normalised recovery. The curves are a re-run, so their AUCs can differ
+  slightly from the recorded ones (GPU non-determinism); the dashboard prints the difference.
+
+Found while building it: **only fine-tuning at mem-low (5 models) passes every calibrated primary
+audit**, where only behavior is scored and nothing needs forgetting. Outside the negative control,
+0 of 175 healthy models do. Paper draft 3's abstract says "no method produces a retrain-like
+model under any calibrated audit"; the precise form is "outside the negative control, no
+unlearned model passes every calibrated audit".
+
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 
 Checkpoints and records are complete and consistent. One thing is **not** settled, and it affects
@@ -2945,8 +2969,8 @@ Stages 0–8 are complete (11 Oct 2026). What remains, from master reference v3.
 
 1. **Final paper to the mentor — by 29 Oct 2026.**
 2. **Final progress presentation — 31 Oct.**
-3. **Streamlit dashboard** (a visualization layer over the results, §20.2) **and the final
-   presentation — 5 Nov.**
+3. **Final presentation, with the dashboard demonstration — 5 Nov.** The dashboard is built
+   (28 Oct); it gains its last two views when notebook 06 is re-run and notebook 07's curves come in.
 4. Figure sizes for the paper template, once the venue is known.
 
 **Novelty thread `9IzfArmoHq` — closed, 8 Sep 2026.** It is *Unlearning Evaluation through Subset
