@@ -50,3 +50,26 @@ def test_the_band_rule_maths():
     assert abs(stats.naive_fpr(1000, 2.0) - 0.0455) < 0.002
     assert stats.naive_fpr(4, 2.0) > 3 * 0.0455
     assert stats.pi_multiplier(4, 0.9545) > 3.5
+
+
+def test_per_retrain_verdicts_reproduce_the_published_rates():
+    """Step 2 of the tour judges every retrain itself; it must give the calibration's counts."""
+    import sys
+
+    sys.path.insert(0, str(DASH))
+    import data as D
+    import stats
+
+    if not (DASH / "data" / "candidates.parquet").is_file():
+        pytest.skip("no per-retrain values in the snapshot")
+    c, v = D.table("candidates"), D.table("validity")
+    for cond, n in D.COND_SIZE.items():
+        rr = c[(c["forget_id"] == cond) & (c["metric"] == "mia_auc_pop")
+               & (c["probe_set"] == "forget") & c["band_member"]]
+        vr = v[(v["forget_id"] == cond) & (v["metric"] == "mia_auc_pop")
+               & (v["probe_set"] == "forget")].iloc[0]
+        native = sum(stats.auc_above_chance(x, n) for x in rr["value"])
+        loo = sum(stats.loo_flag(rr["value"].to_numpy(), i, "closer_to_oracle")
+                  for i in range(len(rr)))
+        assert native == int(vr["native_fpr_k"]), cond
+        assert loo == int(vr["calibrated_fpr_k"]), cond

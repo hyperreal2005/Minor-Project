@@ -2881,6 +2881,15 @@ audit**, where only behavior is scored and nothing needs forgetting. Outside the
 model under any calibrated audit"; the precise form is "outside the negative control, no
 unlearned model passes every calibrated audit".
 
+**29 Oct: both exports are in, and check out.** Notebook 06's re-run reproduced every table of the
+11 Oct bundle unchanged and added `candidates.parquet` (3,743 values: 2,073 retrain, 1,670 M0). The
+per-retrain values rebuild every band and every leave-one-out FPR and M0-power count; tour step 2
+recomputes the native rule per retrain and gets the published counts (17/17 at mem-high), now a
+test. Notebook 07's curves (2,624 rows: per condition 30 method, 5 retrain and 5 original curves
+and one random-init) reproduce the Stage 6 AUCs to a median difference of 0.0000 (healthy methods
+≤ 0.001; max 0.021, NegGrad). The paper's abstract, contributions and conclusion now use the
+precise sentence above (docx edited in place; `build/paper_content.py` matches).
+
 ## Outstanding from Stage 5 — one real item (14 Sep 2026)
 
 Checkpoints and records are complete and consistent. One thing is **not** settled, and it affects
@@ -2969,8 +2978,9 @@ Stages 0–8 are complete (11 Oct 2026). What remains, from master reference v3.
 
 1. **Final paper to the mentor — by 29 Oct 2026.**
 2. **Final progress presentation — 31 Oct.**
-3. **Final presentation, with the dashboard demonstration — 5 Nov.** The dashboard is built
-   (28 Oct); it gains its last two views when notebook 06 is re-run and notebook 07's curves come in.
+3. **Final presentation, with the dashboard demonstration — 5 Nov.** The dashboard is complete
+   (29 Oct): both exports are in; see [`../dashboard/README.md`](../dashboard/README.md) for the
+   demo script.
 4. Figure sizes for the paper template, once the venue is known.
 
 **Novelty thread `9IzfArmoHq` — closed, 8 Sep 2026.** It is *Unlearning Evaluation through Subset

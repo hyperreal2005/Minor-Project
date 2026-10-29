@@ -113,12 +113,19 @@ def band_rule():
         m = pd.DataFrame(rows_m, columns=["family", "cond", "flag"])
         x1, x2, x3 = st.columns(3)
         x1.metric("Genuine retrains flagged (leave-one-out)", f"{r['flag'].mean():.1%}",
-                  help=f"{int(r['flag'].sum())} of {len(r)} retrain checks on the five primary audits")
+                  delta=f"{int(r['flag'].sum())} of {len(r)} checks", delta_color="off",
+                  delta_arrow="off",
+                  help="Each genuine retrain against a band built from the others, on the five "
+                       "primary audits at the cells that are not marked.")
         x2.metric("Original models flagged (power)", f"{m['flag'].mean():.0%}" if len(m) else "—")
         x3.metric("Unlearned models flagged", f"{np.nanmean(u['share']):.0%}")
+        pooled = stats.pooled_calibrated_fpr()
+        pk, pn = pooled["five"][0] + pooled["high"][0], pooled["five"][1] + pooled["high"][1]
         st.caption("Widen the band and fewer genuine retrains are flagged, but unlearned models and "
                    "originals slip through too; narrow it and the audit starts accusing retrains. "
-                   "The prediction interval at 95.45% is the rule registered for the study.")
+                   "The prediction interval at 95.45% is the rule registered for the study. These "
+                   "counts cover the five primary audits only; the paper's pooled rate, over every "
+                   f"calibrated audit, is {pk} of {pn} ({pk / pn:.1%}).")
     else:
         st.caption("Once the per-retrain values are in (notebook 06 re-run), this panel also "
                    "recomputes the false-positive rate on the genuine retrains and the power on the "

@@ -56,6 +56,7 @@ def curves_view():
     if st.button("Show the hidden-knowledge case: SalUn at rand-500", icon=":material/visibility:"):
         st.session_state["rl_cond"] = "rand-500"
         st.session_state["rl_methods"] = ["salun"]
+        st.session_state["rl_rand"] = False  # its 0.1 start squashes the gap SalUn opens
     a, b, c = st.columns([2, 2, 1.2])
     with a:
         cnd = stats.condition_select("rl_cond", default="mem-high-3000",
@@ -66,6 +67,11 @@ def curves_view():
     norm = c.toggle("Scale 0 = retrain, 1 = original", value=False, key="rl_norm",
                     help="Each step's accuracy placed between the mean retrain and the mean "
                          "original curve at that step.")
+    rand = c.toggle("Random-init network", key="rl_rand", disabled=norm,
+                    help="A network that never learned anything: the floor. Off, the axis zooms "
+                         "in on the retrains, originals and methods. Not drawn on the 0-1 scale, "
+                         "where it falls far below 0.",
+                    **({} if "rl_rand" in st.session_state else {"value": True}))
     part = cv[cv["forget_id"] == cnd]
     anchors = part[part["arm"].isin(["oracle", "original"])]
     mean_rt = part[part["arm"] == "oracle"].groupby("step")["forget_acc"].mean()
@@ -80,9 +86,11 @@ def curves_view():
 
     fig = go.Figure()
     x_of = lambda s: np.asarray(s) + 1  # noqa: E731 -- log axis needs step 0 at 1
-    for arm, colour, dash, name in (("oracle", D.RETRAIN, "solid", "paired retrains"),
-                                    ("original", D.ORIGINAL, "solid", "originals"),
-                                    ("randinit", D.MUTED, "dot", "random init")):
+    arms = [("oracle", D.RETRAIN, "solid", "paired retrains"),
+            ("original", D.ORIGINAL, "solid", "originals")]
+    if rand and not norm:
+        arms.append(("randinit", D.MUTED, "dot", "random init"))
+    for arm, colour, dash, name in arms:
         for k, (rid, g) in enumerate(part[part["arm"] == arm].groupby("run_id")):
             g = g.sort_values("step")
             fig.add_trace(go.Scatter(x=x_of(g["step"]), y=scale(g["step"], g["forget_acc"]),

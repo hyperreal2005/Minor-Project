@@ -112,18 +112,19 @@ def step2():
         if c:
             rows.append((cond, c))
     fig = go.Figure()
-    y = [D.COND_LABEL[cond] for cond, _ in rows]
+    # A numeric y axis (one row per forget set) so each retrain's dot can be spread vertically.
+    y = list(range(len(rows)))
     if usual:
         fig.add_vline(x=0.5, line=dict(color=D.CRITICAL, width=2),
                       annotation_text="0.5 = no leakage", annotation_position="bottom right")
     else:
-        for cond, c in rows:
-            fig.add_shape(type="rect", x0=c["lo"], x1=c["hi"], y0=D.COND_LABEL[cond],
-                          y1=D.COND_LABEL[cond], yref="y", line=dict(color=D.RETRAIN, width=14),
-                          opacity=0.45)
+        for k, (cond, c) in enumerate(rows):
+            fig.add_shape(type="rect", x0=c["lo"], x1=c["hi"], y0=k - 0.36, y1=k + 0.36,
+                          fillcolor=D.BAND_FILL, line=dict(color=D.RETRAIN, width=1),
+                          layer="below")
     fig.add_trace(go.Scatter(
         x=[c["mean"] for _, c in rows], y=y, mode="markers", name="genuine retrains (mean)",
-        marker=dict(color=D.RETRAIN, size=13, symbol="line-ns-open", line=dict(width=3)),
+        marker=dict(color=D.RETRAIN, size=26, symbol="line-ns-open", line=dict(width=3)),
         hovertext=[f"{D.COND_LABEL[k]}: retrains' AUC {c['mean']:.3f} "
                    f"(band {c['lo']:.3f}–{c['hi']:.3f})" for k, c in rows], hoverinfo="text"))
     fig.add_trace(go.Scatter(
@@ -131,20 +132,50 @@ def step2():
         marker=dict(color=D.ORIGINAL, size=11, symbol="diamond"),
         hovertext=[f"{D.COND_LABEL[k]}: original's AUC {c.get('m0'):.3f}" for k, c in rows],
         hoverinfo="text"))
+    counts = {}
+    if D.has("candidates"):
+        # Every genuine retrain, judged by the rule in force: red = called "leaking".
+        cand = D.table("candidates")
+        xs, ys, cols, hov = [], [], [], []
+        for k, (cond, c) in enumerate(rows):
+            rr = cand[(cand["forget_id"] == cond) & (cand["metric"] == "mia_auc_pop")
+                      & (cand["probe_set"] == "forget") & cand["band_member"]]
+            vals = rr["value"].to_numpy()
+            if usual:
+                flags = [stats.auc_above_chance(v, D.COND_SIZE[cond]) for v in vals]
+            else:
+                flags = [stats.loo_flag(vals, i, "closer_to_oracle") for i in range(len(vals))]
+            counts[cond] = (int(sum(flags)), len(vals))
+            jitter = np.random.default_rng(k).uniform(-0.28, 0.28, len(vals))
+            xs += list(vals)
+            ys += list(k + jitter)
+            cols += [D.CRITICAL if f else D.RETRAIN for f in flags]
+            hov += [f"{D.COND_LABEL[cond]}, retrain {r}: AUC {v:.3f} — "
+                    + ("called leaking" if f else "passes") for r, v, f in
+                    zip(rr["run_id"].str.split("__").str[-1], vals, flags)]
+        fig.add_trace(go.Scatter(x=xs, y=ys, mode="markers",
+                                 name="each genuine retrain (red = flagged)",
+                                 marker=dict(size=8, color=cols, line=dict(color="white", width=1)),
+                                 hovertext=hov, hoverinfo="text"))
     fig.update_xaxes(title="population membership-inference AUC", range=[0.4, 1.02])
-    fig.update_yaxes(autorange="reversed")
-    C.style(fig, height=400)
+    fig.update_yaxes(autorange="reversed", tickmode="array", tickvals=y, zeroline=False,
+                     ticktext=[D.COND_LABEL[cond] for cond, _ in rows], showgrid=False)
+    C.style(fig, height=470)
     st.plotly_chart(fig, width="stretch")
     if usual:
-        flagged = [f"{D.COND_LABEL[k]} {C.pct(c['native_fpr_k'], c['native_fpr_n'])}"
+        flagged = [f"{D.COND_LABEL[k]} {counts[k][0]}/{counts[k][1]}" if k in counts else
+                   f"{D.COND_LABEL[k]} {C.pct(c['native_fpr_k'], c['native_fpr_n'])}"
                    for k, c in rows if c.get("native_fpr_n")]
         st.error("Genuine retrains called **leaking** by the 0.5 rule: " + ", ".join(flagged) +
                  ". The attack separates atypical or mislabelled images from test images whether "
                  "or not the model saw them.", icon=":material/error:")
     else:
+        tally = (" Retrains flagged, each against a band built from the others: "
+                 + ", ".join(f"{D.COND_LABEL[k]} {a}/{n}" for k, (a, n) in counts.items()) + "."
+                 ) if counts else ""
         st.success("Against the retrains' own band, a retrain is flagged only at the nominal rate "
                    "— and note that at mem-high and the canary the original sits *below* the "
-                   "retrains: the model that trained on the data looks less member-like.",
+                   "retrains: the model that trained on the data looks less member-like." + tally,
                    icon=":material/check_circle:")
 
 

@@ -54,6 +54,23 @@ def kendall(x, y) -> float:
     return float(sps.kendalltau(x[ok], y[ok]).statistic)
 
 
+def auc_above_chance(auc: float, n: int, alpha: float = 0.05) -> bool:
+    """The population attack's native rule: AUC significantly above 0.5, one-sided, with the
+    null standard error for n members against n non-members (as calibrate/native.py)."""
+    se = np.sqrt((2 * n + 1) / (12 * n * n))
+    return bool((auc - 0.5) / se > sps.norm.ppf(1 - alpha))
+
+
+def loo_flag(values, i: int, direction: str, coverage: float = 0.9545) -> bool:
+    """Retrain i against a prediction band built from the other retrains (leave-one-out)."""
+    rest = np.delete(np.asarray(values, float), i)
+    if len(rest) < 3:
+        return False
+    k = pi_multiplier(len(rest), coverage)
+    lo, hi = rest.mean() - k * rest.std(ddof=1), rest.mean() + k * rest.std(ddof=1)
+    return D.flag_value(float(values[i]), lo, hi, direction)
+
+
 def pi_multiplier(n: int, coverage: float) -> float:
     """k in mean +- k*s for a prediction interval for one new retrain."""
     if n < 2:

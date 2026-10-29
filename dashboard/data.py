@@ -21,6 +21,9 @@ CONDITIONS = ["canary-500", "mem-high-3000", "mem-med-3000", "mem-low-3000",
 COND_LABEL = {"canary-500": "canary", "mem-high-3000": "mem-high", "mem-med-3000": "mem-med",
               "mem-low-3000": "mem-low", "rand-500": "rand-500", "rand-2500": "rand-2500",
               "rand-3000": "rand-3000", "rand-5000": "rand-5000"}
+COND_SIZE = {"canary-500": 500, "mem-high-3000": 3000, "mem-med-3000": 3000,
+             "mem-low-3000": 3000, "rand-500": 500, "rand-2500": 2500, "rand-3000": 3000,
+             "rand-5000": 5000}
 COND_BLURB = {
     "canary-500": "500 images given a deliberately wrong label before training: residual memory "
                   "is measurable directly (the ground truth)",

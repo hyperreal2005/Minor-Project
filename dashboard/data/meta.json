@@ -1,8 +1,8 @@
 {
-  "built": "2026-10-28 14:02 UTC",
-  "commit": "2b96c72",
-  "has_candidates": false,
-  "curves_rows": 0,
+  "built": "2026-10-29 10:49 UTC",
+  "commit": "814eb00",
+  "has_candidates": true,
+  "curves_rows": 2624,
   "gallery_images": 192,
   "tables": {
     "flags": 10008,
@@ -16,6 +16,7 @@
     "relearning_vs_accuracy": 8,
     "twins": 16,
     "provenance": 144,
+    "candidates": 3743,
     "correlations": 60,
     "canary_continuous": 17,
     "mixed_effects": 55,

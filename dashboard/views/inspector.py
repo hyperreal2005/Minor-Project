@@ -156,9 +156,12 @@ def render():
 
     st.subheader("Verdicts")
     tdf = pd.DataFrame(table_rows)
+    # As text, so a cell with no number (an audit with no band) reads "—": the grid draws a
+    # missing number as "None" whatever the format.
+    for col, fmt in (("value", "{:.4g}"), ("original", "{:.4g}"), ("G", "{:.2f}")):
+        if col in tdf:
+            tdf[col] = [("—" if pd.isna(x) else fmt.format(x)) for x in tdf[col]]
     st.dataframe(tdf, hide_index=True, width="stretch",
-                 column_config={"value": st.column_config.NumberColumn(format="%.4g"),
-                                "original": st.column_config.NumberColumn(format="%.4g"),
-                                "G": st.column_config.NumberColumn(
-                                    format="%.2f", help="0 = like a retrain, 1 = like the "
-                                    "original, >1 = farther than the original")})
+                 column_config={"G": st.column_config.Column(
+                     help="0 = like a retrain, 1 = like the original, >1 = farther than the "
+                          "original")})
