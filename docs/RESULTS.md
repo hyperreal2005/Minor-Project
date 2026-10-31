@@ -71,10 +71,13 @@ The setup:
 
 ### The short answer
 
-1. **No method produces a model that looks like a retrain, on any calibrated audit.**
+1. **Outside the negative control, no unlearned model passes every calibrated audit** (0 of 175
+   healthy models).
    - Representation and relearning flag every healthy unlearned model as "unlike every
      retrain", wherever they can measure anything.
-   - Behaviour flags every one too, except at mem-low (77%).
+   - Behaviour flags every one too, except at mem-low (77%). At mem-low, the negative control,
+     nothing needs forgetting and only behaviour is scored; the 5 models it passes there are all
+     fine-tuning.
    - The privacy audits flag 84–100%, except at mem-med (52–60%).
    - Representations end up **farther from a retrain than the original model was**, at most
      conditions.
@@ -1184,8 +1187,8 @@ What this means:
 
 Full median-G and signed-G tables per method are in [Appendix A](#a5-median-g-per-method).
 
-**RQ1 answer.** The approximate methods do **not** reproduce a retrain on any calibrated audit.
-On the outputs and on the strong attack they move partway; on representations they
+**RQ1 answer.** The approximate methods do **not** reproduce a retrain: outside the negative
+control, no unlearned model passes every calibrated audit (0 of 175 healthy models). On the outputs and on the strong attack they move partway; on representations they
 overshoot, into a state no retrain occupies.
 
 #### RQ2 / H2a — Behaviour vs membership inference
@@ -1662,8 +1665,10 @@ Two lessons are built into the pipeline as a result:
 ## Part 6 — Reproducing the numbers
 
 **From the downloaded bundle (CPU only, any machine).** Unzip
-`forgetcheck_stage8_results (3).zip` into the repository root so that `results/calibration/` and
-`results/analysis/` are filled; both folders are gitignored. Then:
+`forgetcheck_stage8_results (4).zip` into the repository root so that `results/calibration/` and
+`results/analysis/` are filled; both folders are gitignored. Bundle (4) is notebook 06 re-run on
+the same records: its tables are identical to (3)'s, plus `candidates.parquet`, every retrain's
+and M0's own value per audit metric, which the dashboard uses. Then:
 
 ```
 forgetcheck --root . analyse      # recomputes all 17 analysis tables from results/calibration/
@@ -1686,8 +1691,10 @@ Then run Steps 0–3. Two checks that the records are current:
   depends on (the canary privacy and rand-5000 SDE rows: 11 Oct 2026, commit `ef0d8cc`).
 
 **From scratch.** Notebooks 01–06 in `notebooks/kaggle/` run the stages in order. Training costs
-about 8 GPU-hours (Stage 3), unlearning about 12.6 (Stage 5), and the audits a few more. The test
-suite (`pytest`, 605 tests) checks the pipeline on synthetic data shaped like the real data.
+about 8 GPU-hours (Stage 3), unlearning about 12.6 (Stage 5), and the audits a few more. Notebook
+07 re-runs the relearning protocol step by step for the dashboard's curves (`relearn-curves`,
+1–3 GPU-hours). The test suite (`pytest`, 607 tests, plus 27 slow ones with `-m slow`) checks the
+pipeline on synthetic data shaped like the real data.
 
 ---
 
